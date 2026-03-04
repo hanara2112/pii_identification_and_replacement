@@ -88,7 +88,7 @@ MODEL_CONFIGS = {
     },
 
     "t5-small": {
-        "model_name": "google/t5-small",
+        "model_name": "google-t5/t5-small",
         "model_type": "t5",
         "batch_size": 4,
         "eval_batch_size": 8,
