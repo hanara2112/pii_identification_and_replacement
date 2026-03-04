@@ -1,0 +1,44 @@
+# Environment and secrets
+.env
+*.key
+
+# Output files
+output/
+# *.jsonl
+*.log
+
+# Data cache
+data_cache/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Data
+data/
+*.csv
+*.json
+
+# Models cache
+.cache/
+models/
+
+/data_creation
+
+/Seq2Seq_model/checkpoints
+/Seq2Seq_model/data_splits
+/Seq2Seq_model/logs
+
