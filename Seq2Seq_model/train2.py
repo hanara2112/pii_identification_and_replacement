@@ -4,7 +4,7 @@ Kaggle-Optimized Training Script for Seq2Seq PII Anonymization
 Identical pipeline to train.py but tuned for Kaggle T4x2 (15GB VRAM each).
 
 Changes from train.py:
-  1. Overrides MODEL_CONFIGS with larger batch sizes + fp16 enabled
+  1. Overrides MODEL_CONFIGS with larger batch sizes
   2. DataParallel for 2× T4 GPUs
   3. Test set evaluation after training (full metrics report)
   4. NUM_WORKERS = 4 (Kaggle has 4 CPU cores)
@@ -82,7 +82,6 @@ from utils import (
 # KAGGLE OVERRIDES — only these differ from train.py
 # ============================================================
 # Kaggle T4x2: 15GB VRAM each, 30GB total via DataParallel.
-# T4 tensor cores are highly efficient at fp16.
 # Batch sizes ~4× larger than RTX 3050 4GB config.
 
 NUM_WORKERS_KAGGLE = 4  # Kaggle has 4 CPU cores
@@ -94,7 +93,6 @@ KAGGLE_MODEL_CONFIGS = {
         "batch_size": 32,              # was 8
         "eval_batch_size": 64,         # was 16
         "learning_rate": 3e-4,
-        "fp16": True,                  # was False — T4 tensor cores
         "gradient_checkpointing": False,
         "gradient_accumulation_steps": 1,   # was 2 — big batch already
         "prefix": "anonymize: ",
@@ -107,7 +105,6 @@ KAGGLE_MODEL_CONFIGS = {
         "batch_size": 16,              # was 4
         "eval_batch_size": 32,         # was 8
         "learning_rate": 3e-4,
-        "fp16": True,                  # was False
         "gradient_checkpointing": False,   # was True — enough VRAM now
         "gradient_accumulation_steps": 2,  # was 4 — effective batch = 32
         "prefix": "anonymize: ",
@@ -120,7 +117,6 @@ KAGGLE_MODEL_CONFIGS = {
         "batch_size": 16,              # was 4
         "eval_batch_size": 32,         # was 8
         "learning_rate": 3e-4,
-        "fp16": True,                  # was False
         "gradient_checkpointing": False,   # was True
         "gradient_accumulation_steps": 2,  # was 4
         "prefix": "Replace all personal identifiable information in the following text with realistic fake alternatives: ",
@@ -133,7 +129,6 @@ KAGGLE_MODEL_CONFIGS = {
         "batch_size": 16,              # was 2
         "eval_batch_size": 32,         # was 4
         "learning_rate": 2e-5,
-        "fp16": True,                  # was False
         "gradient_checkpointing": False,   # was True — 560MB model fits easily
         "gradient_accumulation_steps": 2,  # was 8 — effective batch = 32
         "prefix": "",
@@ -146,7 +141,6 @@ KAGGLE_MODEL_CONFIGS = {
         "batch_size": 16,              # was 4
         "eval_batch_size": 32,         # was 8
         "learning_rate": 2e-5,
-        "fp16": True,                  # was False
         "gradient_checkpointing": False,   # was True — 890MB model fits
         "gradient_accumulation_steps": 2,  # was 4
         "prefix": "",
@@ -159,7 +153,6 @@ KAGGLE_MODEL_CONFIGS = {
         "batch_size": 16,              # was 4
         "eval_batch_size": 32,         # was 8
         "learning_rate": 2e-4,
-        "fp16": True,                  # was False
         "gradient_checkpointing": True,    # keep for QLoRA safety
         "gradient_accumulation_steps": 2,  # was 4
         "prefix": "Replace all personal identifiable information in the following text with realistic fake alternatives: ",
@@ -196,7 +189,7 @@ def detect_kaggle_gpus():
     else:
         print(f"  │  Strategy: Single GPU                       │")
 
-    print(f"  │  fp16: ENABLED (T4 tensor cores)             │")
+    print(f"  │  Precision: float32                         │")
     print(f"  └─────────────────────────────────────────────┘")
 
     return num_gpus, use_multi_gpu
@@ -579,13 +572,12 @@ def train_single_model(
     Train a single model end-to-end.
     Identical logic to train.py but with:
       - DataParallel multi-GPU support
-      - fp16 autocast
       - Test set evaluation after training
     """
     logger = setup_logger(model_key, LOGS_DIR)
     logger.info("=" * 70)
     logger.info(f"TRAINING MODEL: {model_key} ({config['model_name']})")
-    logger.info(f"ENVIRONMENT: Kaggle T4x2 | Multi-GPU={use_multi_gpu} | fp16={config.get('fp16', False)}")
+    logger.info(f"ENVIRONMENT: Kaggle T4x2 | Multi-GPU={use_multi_gpu} | Precision=float32")
     logger.info("=" * 70)
 
     checkpoint_dir = get_checkpoint_dir(CHECKPOINTS_DIR, model_key)
@@ -593,7 +585,6 @@ def train_single_model(
     model = None
     optimizer = None
     scheduler = None
-    scaler = None
 
     try:
         # ---- 1. GPU Check ----
@@ -701,14 +692,7 @@ def train_single_model(
             num_training_steps=total_steps,
         )
 
-        # fp16 GradScaler for mixed precision
-        use_fp16 = config.get("fp16", False) and torch.cuda.is_available()
-        if use_fp16:
-            scaler = torch.amp.GradScaler("cuda")
-            logger.info("  Mixed precision: fp16 ENABLED (GradScaler active)")
-        else:
-            scaler = None
-            logger.info("  Mixed precision: DISABLED")
+        logger.info("  Precision: float32 (no mixed precision)")
 
         # Label Smoothed Loss
         loss_fn = LabelSmoothedCrossEntropyLoss(
@@ -752,7 +736,6 @@ def train_single_model(
             "model_name": config["model_name"],
             "environment": "kaggle_t4x2",
             "multi_gpu": use_multi_gpu,
-            "fp16": use_fp16,
             "batch_size": batch_size,
             "effective_batch_size": batch_size * accumulation_steps,
             "train_losses": [],
@@ -785,7 +768,7 @@ def train_single_model(
             pbar = tqdm(
                 enumerate(train_loader),
                 total=len(train_loader),
-                desc=f"Epoch {epoch+1}/{NUM_EPOCHS} [{model_key}]",
+                desc=f"Epoch {epoch+1}/{NUM_EPOCHS}",
                 bar_format="{l_bar}{bar:30}{r_bar}",
                 dynamic_ncols=True,
             )
@@ -796,25 +779,14 @@ def train_single_model(
                     attention_mask = batch["attention_mask"].to(device, non_blocking=True)
                     labels = batch["labels"].to(device, non_blocking=True)
 
-                    # Forward pass with optional fp16 autocast
-                    if use_fp16:
-                        with torch.amp.autocast("cuda"):
-                            outputs = model(
-                                input_ids=input_ids,
-                                attention_mask=attention_mask,
-                                labels=labels,
-                            )
-                            loss = loss_fn(outputs.logits, labels) / accumulation_steps
-
-                        scaler.scale(loss).backward()
-                    else:
-                        outputs = model(
-                            input_ids=input_ids,
-                            attention_mask=attention_mask,
-                            labels=labels,
-                        )
-                        loss = loss_fn(outputs.logits, labels) / accumulation_steps
-                        loss.backward()
+                    # Forward pass (float32)
+                    outputs = model(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        labels=labels,
+                    )
+                    loss = loss_fn(outputs.logits, labels) / accumulation_steps
+                    loss.backward()
 
                     epoch_loss += loss.item() * accumulation_steps
                     epoch_steps += 1
@@ -830,14 +802,8 @@ def train_single_model(
 
                     # Gradient accumulation step
                     if (batch_idx + 1) % accumulation_steps == 0:
-                        if use_fp16:
-                            scaler.unscale_(optimizer)
-                            torch.nn.utils.clip_grad_norm_(trainable_params, MAX_GRAD_NORM)
-                            scaler.step(optimizer)
-                            scaler.update()
-                        else:
-                            torch.nn.utils.clip_grad_norm_(trainable_params, MAX_GRAD_NORM)
-                            optimizer.step()
+                        torch.nn.utils.clip_grad_norm_(trainable_params, MAX_GRAD_NORM)
+                        optimizer.step()
 
                         scheduler.step()
                         optimizer.zero_grad(set_to_none=True)
@@ -864,7 +830,7 @@ def train_single_model(
 
                         # Evaluation & Checkpointing
                         if global_step % EVAL_STEPS == 0:
-                            pbar.set_description(f"Epoch {epoch+1}/{NUM_EPOCHS} [{model_key}] (evaluating...)")
+                            pbar.set_description(f"Epoch {epoch+1}/{NUM_EPOCHS} (evaluating...)")
                             logger.info(f"  Running evaluation at step {global_step}...")
                             val_loss, exact_acc, word_acc, sample_preds, sample_targets = evaluate(
                                 model, val_loader, tokenizer, device,
@@ -900,7 +866,7 @@ def train_single_model(
                                 tqdm.write(f"  ★ New best val loss: {best_val_loss:.4f} — saving checkpoint")
                                 # Save unwrapped model (without DataParallel wrapper)
                                 save_checkpoint(
-                                    unwrap_model(model), optimizer, scheduler, scaler,
+                                    unwrap_model(model), optimizer, scheduler, None,
                                     epoch, global_step, best_val_loss,
                                     checkpoint_dir,
                                     model_config=config,
@@ -908,7 +874,7 @@ def train_single_model(
                                 )
                                 logger.info(f"  Best checkpoint saved at step {global_step}")
 
-                            pbar.set_description(f"Epoch {epoch+1}/{NUM_EPOCHS} [{model_key}]")
+                            pbar.set_description(f"Epoch {epoch+1}/{NUM_EPOCHS}")
                             model.train()
 
                     del input_ids, attention_mask, labels, outputs, loss
@@ -1058,7 +1024,7 @@ def train_single_model(
     finally:
         logger.info(f"Cleaning up {model_key} from GPU memory...")
         actual_model = unwrap_model(model) if model is not None else None
-        cleanup_model_from_memory(actual_model, optimizer, scheduler, scaler)
+        cleanup_model_from_memory(actual_model, optimizer, scheduler, None)
         for obj_name in ['train_loader', 'val_loader', 'test_loader',
                          'train_dataset', 'val_dataset', 'test_dataset', 'tokenizer']:
             if obj_name in locals():
@@ -1145,9 +1111,8 @@ def interactive_model_selection() -> list[str]:
         bs = cfg["batch_size"]
         accum = cfg.get("gradient_accumulation_steps", 1)
         eff = bs * accum
-        fp16_str = "fp16" if cfg.get("fp16", False) else "fp32"
         print(f"  {i:<4} {key:<25} {model_id:<35} {status_str}")
-        print(f"       batch={bs}, eff_batch={eff}, {fp16_str}")
+        print(f"       batch={bs}, eff_batch={eff}")
 
     print("  " + "-" * 76)
 
@@ -1201,12 +1166,11 @@ def interactive_model_selection() -> list[str]:
         status = statuses[key]
         cfg = KAGGLE_MODEL_CONFIGS[key]
         bs = cfg["batch_size"]
-        fp16_str = "fp16" if cfg.get("fp16", False) else "fp32"
         if status["has_checkpoint"]:
             loss_str = f"{status['best_val_loss']:.4f}" if status["best_val_loss"] else "N/A"
-            print(f"    → {key}: WARM START (prev best_loss={loss_str}) | batch={bs}, {fp16_str}")
+            print(f"    → {key}: WARM START (prev best_loss={loss_str}) | batch={bs}")
         else:
-            print(f"    → {key}: Training from SCRATCH | batch={bs}, {fp16_str}")
+            print(f"    → {key}: Training from SCRATCH | batch={bs}")
 
     try:
         confirm = input(f"\n  Proceed with training {len(selected)} model(s)? [Y/n]: ").strip().lower()
@@ -1271,8 +1235,7 @@ def main():
             qlora_tag = " [QLoRA]" if cfg.get("use_qlora", False) else ""
             init_tag = " (warm start)" if status["has_checkpoint"] else " (from scratch)"
             bs = cfg["batch_size"]
-            fp16_str = "fp16" if cfg.get("fp16", False) else "fp32"
-            print(f"    {i}. {m} ({cfg['model_name']}){qlora_tag}{init_tag} | batch={bs}, {fp16_str}")
+            print(f"    {i}. {m} ({cfg['model_name']}){qlora_tag}{init_tag} | batch={bs}")
     else:
         models_to_train = interactive_model_selection()
 
@@ -1287,7 +1250,7 @@ def main():
         print(f"  [{idx}/{len(models_to_train)}] Training: {model_key}")
         print(f"  Config: batch={config['batch_size']}, "
               f"accum={config.get('gradient_accumulation_steps', 1)}, "
-              f"fp16={config.get('fp16', False)}, "
+              f"precision=float32, "
               f"grad_ckpt={config.get('gradient_checkpointing', False)}")
         print(f"{'#' * 70}")
 
