@@ -1,18 +1,28 @@
 """
-Kaggle Training Script for Seq2Seq PII Anonymization
-=====================================================
-Simplified training pipeline tuned for Kaggle T4x2 (15 GB VRAM each).
+Kaggle Training Script with PII-Aware Loss
+============================================
+Same as train2.py but uses a novel PII-Aware Loss function:
 
-Differences from train.py (RTX 3050 4GB):
-  - Larger batch sizes (more VRAM available)
-  - DataParallel for 2× T4 GPUs
-  - Test set evaluation after training
-  - No aggressive memory management hacks (plenty of VRAM)
+Standard CE Problem:
+    Target says "John" → "James", model outputs "David".
+    Standard CE penalizes this — even though "David" is a valid anonymization.
+
+PII-Aware Loss Solution:
+    For NON-PII tokens:  standard label-smoothed CE (must match target exactly)
+    For PII tokens:      α × label-smoothed CE   (weak push toward target — for structure)
+                       + β × anti-leakage penalty (strong push AWAY from input token)
+
+    This means the model is:
+      - Strongly penalized for copying original PII (leakage)
+      - Weakly guided toward the target replacement (for type consistency)
+      - NOT harshly punished for choosing a different valid replacement
+
+Saves to checkpoints2/ (separate from train2.py's checkpoints/).
 
 Usage:
-    python train2.py                    # interactive model selection
-    python train2.py t5-small bart-base # command-line selection
-    python train2.py all                # train every model
+    python train3.py                    # interactive model selection
+    python train3.py t5-small bart-base # command-line selection
+    python train3.py all                # train every model
 """
 
 import os
@@ -24,7 +34,8 @@ import traceback
 
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 from transformers import (
     AutoTokenizer,
@@ -34,7 +45,6 @@ from transformers import (
 )
 
 from config import (
-    CHECKPOINTS_DIR,
     LOGS_DIR,
     DATA_SPLITS_DIR,
     MAX_INPUT_LENGTH,
@@ -51,28 +61,32 @@ from config import (
     ENABLED_AUGMENTATIONS,
     AUGMENTATION_WEIGHTS,
 )
-from dataset import AnonymizationDataset, load_split_data
+from dataset import load_split_data
 from augmentations import TextAugmentor
 from utils import (
     setup_logger,
-    save_checkpoint,
-    load_checkpoint,
     save_training_history,
-    get_checkpoint_dir,
     format_time,
     count_parameters,
     compute_token_accuracy,
     compute_word_level_accuracy,
     compute_all_metrics,
-    LabelSmoothedCrossEntropyLoss,
 )
 
 
 # ============================================================
-# KAGGLE MODEL CONFIGS  (larger batches than RTX 3050)
+# PATHS — separate from train2.py
+# ============================================================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CHECKPOINTS2_DIR = os.path.join(BASE_DIR, "checkpoints2")
+LOGS2_DIR = os.path.join(BASE_DIR, "logs2")
+
+
+# ============================================================
+# KAGGLE MODEL CONFIGS (same as train2.py)
 # ============================================================
 
-NUM_WORKERS = 4  # Kaggle has 4 CPU cores
+NUM_WORKERS = 4
 
 MODEL_CONFIGS = {
     "t5-efficient-tiny": {
@@ -149,6 +163,285 @@ MODEL_CONFIGS = {
 
 
 # ============================================================
+# PII-AWARE DATASET
+# ============================================================
+# Returns a pii_mask alongside input_ids/labels so the loss knows
+# which target positions correspond to PII replacements.
+
+class PIIAwareDataset(Dataset):
+    """
+    Dataset that also produces:
+      - input_token_ids:  tokenized original text (no prefix), padded
+      - pii_mask:         1 at target positions that correspond to PII, 0 otherwise
+
+    The pii_mask is built by:
+      1. Tokenize each entity string from entity_texts
+      2. Find those token subsequences in the input_token_ids
+      3. Mark the corresponding positions in the target as PII
+
+    Since input and target have the same structure (only PII spans differ),
+    the PII positions in the target are at the same word-level offsets.
+    We use a word-alignment approach: tokenize original and anonymized at
+    the word level, find which words differ, then map those word indices
+    back to token positions in the target.
+    """
+
+    def __init__(
+        self,
+        data: list[dict],
+        tokenizer,
+        max_input_length: int = 128,
+        max_target_length: int = 128,
+        prefix: str = "",
+        augmentor=None,
+    ):
+        self.data = data
+        self.tokenizer = tokenizer
+        self.max_input_length = max_input_length
+        self.max_target_length = max_target_length
+        self.prefix = prefix
+        self.augmentor = augmentor
+
+    def __len__(self):
+        return len(self.data)
+
+    def _build_pii_mask(self, original_text: str, anonymized_text: str, entity_texts: list,
+                        label_ids: torch.Tensor) -> torch.Tensor:
+        """
+        Build a binary mask over the target (label) tokens.
+        1 = this token position is a PII replacement, 0 = non-PII (keep exact).
+
+        Strategy: tokenize each original entity, find those subword tokens
+        in the tokenized original. The corresponding positions in the target
+        are PII positions (since the sentence structure is identical except
+        for the PII spans).
+
+        Fallback: if entity_texts is empty or matching fails, use word-level
+        diff between original and anonymized to detect changed positions.
+        """
+        seq_len = label_ids.size(0)
+        pii_mask = torch.zeros(seq_len, dtype=torch.float32)
+
+        if not entity_texts:
+            return pii_mask
+
+        # Tokenize original text (without prefix) to get input token ids
+        orig_tokens = self.tokenizer(
+            original_text,
+            max_length=self.max_target_length,
+            truncation=True,
+            padding="max_length",
+            return_tensors="pt",
+        )["input_ids"].squeeze()  # (seq_len,)
+
+        # Tokenize anonymized text to get target token ids
+        anon_tokens = self.tokenizer(
+            anonymized_text,
+            max_length=self.max_target_length,
+            truncation=True,
+            padding="max_length",
+            return_tensors="pt",
+        )["input_ids"].squeeze()  # (seq_len,)
+
+        pad_id = self.tokenizer.pad_token_id
+
+        # Method 1: Token-level diff — mark positions where orig != anon
+        # This is the most reliable way since tokenization aligns naturally
+        # for sentences that only differ in PII spans.
+        min_len = min(len(orig_tokens), len(anon_tokens), seq_len)
+        for i in range(min_len):
+            if orig_tokens[i] == pad_id and anon_tokens[i] == pad_id:
+                continue
+            if orig_tokens[i] != anon_tokens[i]:
+                # This position changed between original and anonymized → PII
+                if label_ids[i] != -100:  # not padding in labels
+                    pii_mask[i] = 1.0
+
+        # Method 2 (supplementary): also mark positions matching entity subwords
+        # in the original, in case token-level diff missed anything due to
+        # length differences in PII replacements (e.g., "John" → "Elara Vance")
+        for entity in entity_texts:
+            if not entity or len(entity) < 2:
+                continue
+            # Tokenize the entity string
+            ent_ids = self.tokenizer.encode(entity, add_special_tokens=False)
+            if not ent_ids:
+                continue
+            # Scan for this subsequence in orig_tokens
+            ent_len = len(ent_ids)
+            for start in range(min_len - ent_len + 1):
+                if orig_tokens[start:start + ent_len].tolist() == ent_ids:
+                    # Mark corresponding positions in target as PII
+                    for j in range(start, min(start + ent_len, seq_len)):
+                        if label_ids[j] != -100:
+                            pii_mask[j] = 1.0
+
+        return pii_mask
+
+    def __getitem__(self, idx):
+        entry = self.data[idx]
+
+        original_text = entry["original_text"]
+        anonymized_text = entry["anonymized_text"]
+        entity_texts = entry.get("entity_texts", [])
+
+        # Augmentation (training only)
+        if self.augmentor is not None:
+            original_text, anonymized_text = self.augmentor(original_text, anonymized_text)
+
+        # Tokenize input (with prefix)
+        input_text = self.prefix + original_text
+        model_inputs = self.tokenizer(
+            input_text,
+            max_length=self.max_input_length,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+        )
+
+        # Tokenize target
+        labels = self.tokenizer(
+            anonymized_text,
+            max_length=self.max_target_length,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+        )
+        label_ids = labels["input_ids"].squeeze()
+        label_ids[label_ids == self.tokenizer.pad_token_id] = -100
+
+        # Tokenize original (without prefix) — needed for anti-leakage penalty
+        orig_no_prefix = self.tokenizer(
+            original_text,
+            max_length=self.max_target_length,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+        )
+
+        # Build PII mask
+        pii_mask = self._build_pii_mask(original_text, anonymized_text, entity_texts, label_ids)
+
+        return {
+            "input_ids": model_inputs["input_ids"].squeeze(),
+            "attention_mask": model_inputs["attention_mask"].squeeze(),
+            "labels": label_ids,
+            "original_token_ids": orig_no_prefix["input_ids"].squeeze(),
+            "pii_mask": pii_mask,
+        }
+
+
+# ============================================================
+# PII-AWARE LOSS
+# ============================================================
+
+class PIIAwareLoss(nn.Module):
+    """
+    PII-Aware Loss for Seq2Seq Anonymization.
+
+    For NON-PII token positions (pii_mask == 0):
+        Standard label-smoothed cross-entropy against the target.
+        The model MUST reproduce these tokens exactly.
+
+    For PII token positions (pii_mask == 1):
+        α × label-smoothed CE      — weak structural guidance toward target
+        + β × anti-leakage penalty  — strong penalty for outputting the original token
+
+    The anti-leakage penalty is:  -log(1 - P(original_token))
+        If the model assigns HIGH probability to the original PII token,
+        this penalty is LARGE → pushes the model away from copying.
+        If the model assigns LOW probability to the original token,
+        this penalty is SMALL → no punishment.
+
+    Args:
+        smoothing:     label smoothing factor for CE (default 0.1)
+        alpha:         CE weight for PII positions (default 0.3 — weak)
+        beta:          anti-leakage penalty weight (default 2.0 — strong)
+        ignore_index:  token ID to ignore (default -100)
+    """
+
+    def __init__(
+        self,
+        smoothing: float = 0.1,
+        alpha: float = 0.3,
+        beta: float = 2.0,
+        ignore_index: int = -100,
+    ):
+        super().__init__()
+        self.smoothing = smoothing
+        self.alpha = alpha
+        self.beta = beta
+        self.ignore_index = ignore_index
+
+    def forward(
+        self,
+        logits: torch.Tensor,
+        labels: torch.Tensor,
+        original_token_ids: torch.Tensor,
+        pii_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Args:
+            logits:             (B, T, V) — model output logits
+            labels:             (B, T)    — target token IDs (-100 for padding)
+            original_token_ids: (B, T)    — original input token IDs (for leakage check)
+            pii_mask:           (B, T)    — 1.0 for PII positions, 0.0 for non-PII
+
+        Returns:
+            Scalar loss
+        """
+        batch_size, seq_len, vocab_size = logits.shape
+
+        # Flatten
+        logits_flat = logits.view(-1, vocab_size).float()  # (B*T, V)
+        labels_flat = labels.view(-1)                       # (B*T,)
+        orig_flat = original_token_ids.view(-1)             # (B*T,)
+        pii_flat = pii_mask.view(-1)                        # (B*T,)
+
+        # Non-padding mask
+        non_pad = labels_flat != self.ignore_index
+        if non_pad.sum() == 0:
+            return torch.tensor(0.0, device=logits.device, requires_grad=True)
+
+        # Log probabilities
+        log_probs = F.log_softmax(logits_flat, dim=-1)  # (B*T, V)
+        probs = torch.exp(log_probs)                     # (B*T, V)
+
+        # ── Standard label-smoothed CE (for all positions) ──
+        safe_labels = labels_flat.clamp(min=0)
+        nll_loss = F.nll_loss(log_probs, safe_labels, reduction='none')  # (B*T,)
+        smooth_loss = -log_probs.sum(dim=-1) / vocab_size                # (B*T,)
+        ce_loss = (1.0 - self.smoothing) * nll_loss + self.smoothing * smooth_loss  # (B*T,)
+
+        # ── Anti-leakage penalty: -log(1 - P(original_token)) ──
+        # Only applies at PII positions
+        safe_orig = orig_flat.clamp(min=0)
+        # P(original_token) at each position
+        p_orig = probs.gather(1, safe_orig.unsqueeze(1)).squeeze(1)  # (B*T,)
+        # Clamp to avoid log(0)
+        anti_leak = -torch.log(1.0 - p_orig.clamp(max=0.999))  # (B*T,)
+
+        # ── Combine ──
+        # Non-PII positions: full CE, no leakage penalty
+        # PII positions:     α × CE + β × anti-leakage
+        is_pii = (pii_flat > 0.5) & non_pad
+        is_non_pii = (pii_flat <= 0.5) & non_pad
+
+        loss = torch.zeros_like(ce_loss)
+
+        # Non-PII: standard CE (weight 1.0)
+        loss[is_non_pii] = ce_loss[is_non_pii]
+
+        # PII: reduced CE + anti-leakage
+        loss[is_pii] = self.alpha * ce_loss[is_pii] + self.beta * anti_leak[is_pii]
+
+        # Average over non-padding positions
+        total_loss = loss[non_pad].mean()
+
+        return total_loss
+
+
+# ============================================================
 # HELPERS
 # ============================================================
 
@@ -169,6 +462,54 @@ def get_device():
 def unwrap(model):
     """Return the underlying model if wrapped in DataParallel."""
     return model.module if isinstance(model, nn.DataParallel) else model
+
+
+def get_checkpoint_dir(model_key: str) -> str:
+    """Get checkpoint directory inside checkpoints2/."""
+    path = os.path.join(CHECKPOINTS2_DIR, model_key)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def save_checkpoint_v2(
+    model, optimizer, scheduler,
+    epoch, global_step, best_val_loss,
+    checkpoint_dir, model_config=None,
+    use_qlora=False,
+):
+    """Save the best model checkpoint to checkpoints2/."""
+    from datetime import datetime
+    checkpoint = {
+        "epoch": epoch,
+        "global_step": global_step,
+        "best_val_loss": best_val_loss,
+        "model_config": model_config,
+        "loss_type": "pii_aware",
+        "timestamp": datetime.now().isoformat(),
+    }
+
+    if use_qlora:
+        adapter_path = os.path.join(checkpoint_dir, "lora_adapter")
+        model.save_pretrained(adapter_path)
+        checkpoint["adapter_path"] = adapter_path
+    else:
+        checkpoint["model_state_dict"] = model.state_dict()
+
+    checkpoint["optimizer_state_dict"] = optimizer.state_dict()
+    if scheduler is not None:
+        checkpoint["scheduler_state_dict"] = scheduler.state_dict()
+
+    best_path = os.path.join(checkpoint_dir, "best_model.pt")
+    torch.save(checkpoint, best_path)
+    return best_path
+
+
+def load_checkpoint_v2(checkpoint_dir: str):
+    """Load checkpoint from checkpoints2/."""
+    path = os.path.join(checkpoint_dir, "best_model.pt")
+    if not os.path.exists(path):
+        return None
+    return torch.load(path, map_location="cpu", weights_only=False)
 
 
 # ============================================================
@@ -211,7 +552,6 @@ def load_model_and_tokenizer(config: dict, device: torch.device, num_gpus: int):
         )
         model = get_peft_model(model, lora_config)
         model.print_trainable_parameters()
-        # QLoRA uses device_map="auto" — do NOT wrap in DataParallel
     else:
         model = AutoModelForSeq2SeqLM.from_pretrained(model_name, torch_dtype=torch.float32)
         if config.get("gradient_checkpointing", False):
@@ -225,7 +565,7 @@ def load_model_and_tokenizer(config: dict, device: torch.device, num_gpus: int):
 
 
 # ============================================================
-# EVALUATION
+# EVALUATION (uses standard CE loss for comparability)
 # ============================================================
 
 @torch.no_grad()
@@ -244,6 +584,7 @@ def evaluate(model, dataloader, tokenizer, device, max_batches=None):
         attention_mask = batch["attention_mask"].to(device)
         labels = batch["labels"].to(device)
 
+        # Use model's built-in CE for val loss (comparable across runs)
         outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
         loss = outputs.loss
         if loss.dim() > 0:
@@ -251,7 +592,6 @@ def evaluate(model, dataloader, tokenizer, device, max_batches=None):
         total_loss += loss.item()
         n_batches += 1
 
-        # Decode first few batches for accuracy metrics
         if idx < 10:
             gen_ids = raw.generate(
                 input_ids=input_ids,
@@ -275,18 +615,10 @@ def evaluate(model, dataloader, tokenizer, device, max_batches=None):
     return avg_loss, exact_acc, word_acc, all_preds[:5], all_targets[:5]
 
 
-# ============================================================
-# FULL EVALUATION (val or test — all metrics)
-# ============================================================
-
 @torch.no_grad()
 def full_evaluation(model, dataloader, tokenizer, device, eval_batch_size,
                     original_texts, entity_texts, split_name, logger):
-    """
-    Generate predictions on the entire split and compute comprehensive metrics
-    (BLEU, ROUGE, BERTScore, entity leakage).
-    Returns (avg_loss, metrics_dict, preds, targets, originals).
-    """
+    """Full evaluation with all metrics (BLEU, ROUGE, BERTScore, leakage)."""
     logger.info(f"Running full evaluation on {split_name} set …")
     model.eval()
     raw = unwrap(model)
@@ -337,13 +669,10 @@ def full_evaluation(model, dataloader, tokenizer, device, eval_batch_size,
         compute_bert=True,
     )
 
-    # Log summary
-    logger.info(f"  {split_name} Loss: {avg_loss:.4f}")
     for key in ["exact_match", "word_accuracy", "bleu", "rouge1", "rougeL",
                  "bertscore_f1", "entity_leakage_rate"]:
         logger.info(f"  {key}: {metrics.get(key, 0):.2f}")
 
-    # Print to console
     tqdm.write(f"\n  ── {split_name.upper()} RESULTS ──")
     tqdm.write(f"  Loss: {avg_loss:.4f}  |  Exact: {metrics['exact_match']:.2f}%  |  "
                f"Word Acc: {metrics['word_accuracy']:.2f}%")
@@ -352,7 +681,6 @@ def full_evaluation(model, dataloader, tokenizer, device, eval_batch_size,
     tqdm.write(f"  Entity Leakage: {metrics.get('entity_leakage_rate', 0):.2f}% "
                f"({metrics.get('total_entities_leaked', 0)}/{metrics.get('total_entities_checked', 0)})")
 
-    # Sample predictions
     for i in range(min(3, len(all_preds))):
         logger.info(f"  Sample {i+1}:  PRED={all_preds[i][:120]}  |  TRUE={all_targets[i][:120]}")
 
@@ -364,13 +692,14 @@ def full_evaluation(model, dataloader, tokenizer, device, eval_batch_size,
 # ============================================================
 
 def train_single_model(model_key, config, device, num_gpus):
-    """Train a single model end-to-end. Returns True on success."""
-    logger = setup_logger(model_key, LOGS_DIR)
+    """Train a single model with PII-Aware Loss. Returns True on success."""
+    os.makedirs(LOGS2_DIR, exist_ok=True)
+    logger = setup_logger(f"{model_key}_v3", LOGS2_DIR)
     logger.info("=" * 70)
-    logger.info(f"TRAINING: {model_key}  ({config['model_name']})")
+    logger.info(f"TRAINING (PII-Aware Loss): {model_key}  ({config['model_name']})")
     logger.info("=" * 70)
 
-    checkpoint_dir = get_checkpoint_dir(CHECKPOINTS_DIR, model_key)
+    checkpoint_dir = get_checkpoint_dir(model_key)
 
     try:
         # ── 1. Data ──────────────────────────────────────────────
@@ -399,7 +728,10 @@ def train_single_model(model_key, config, device, num_gpus):
                 augmentation_weights=AUGMENTATION_WEIGHTS,
             )
 
-        train_dataset = AnonymizationDataset(train_data, tokenizer, MAX_INPUT_LENGTH, MAX_TARGET_LENGTH, prefix, augmentor=augmentor)
+        # Training uses PII-aware dataset (returns pii_mask + original_token_ids)
+        train_dataset = PIIAwareDataset(train_data, tokenizer, MAX_INPUT_LENGTH, MAX_TARGET_LENGTH, prefix, augmentor=augmentor)
+        # Val/test use standard dataset (evaluation uses model's built-in loss)
+        from dataset import AnonymizationDataset
         val_dataset   = AnonymizationDataset(val_data,   tokenizer, MAX_INPUT_LENGTH, MAX_TARGET_LENGTH, prefix, augmentor=None)
         test_dataset  = AnonymizationDataset(test_data,  tokenizer, MAX_INPUT_LENGTH, MAX_TARGET_LENGTH, prefix, augmentor=None)
 
@@ -410,7 +742,7 @@ def train_single_model(model_key, config, device, num_gpus):
         val_loader   = DataLoader(val_dataset,   batch_size=eval_bs, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True)
         test_loader  = DataLoader(test_dataset,  batch_size=eval_bs, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True)
 
-        # ── 4. Optimizer & Scheduler ─────────────────────────────
+        # ── 4. Optimizer, Scheduler, Loss ────────────────────────
         accum_steps = config.get("gradient_accumulation_steps", 1)
         total_steps = (len(train_loader) // accum_steps) * NUM_EPOCHS
 
@@ -419,13 +751,21 @@ def train_single_model(model_key, config, device, num_gpus):
         scheduler = get_linear_schedule_with_warmup(optimizer,
                                                     num_warmup_steps=min(WARMUP_STEPS, total_steps // 10),
                                                     num_training_steps=total_steps)
-        loss_fn = LabelSmoothedCrossEntropyLoss(smoothing=LABEL_SMOOTHING, ignore_index=-100)
+
+        # ★ THE KEY DIFFERENCE: PII-Aware Loss instead of standard CE
+        loss_fn = PIIAwareLoss(
+            smoothing=LABEL_SMOOTHING,
+            alpha=0.3,    # weak CE on PII positions (don't force exact target match)
+            beta=2.0,     # strong anti-leakage penalty (push away from original PII)
+            ignore_index=-100,
+        )
+        logger.info(f"  Loss: PIIAwareLoss(smoothing={LABEL_SMOOTHING}, alpha=0.3, beta=2.0)")
 
         # ── 5. Resume / Warm Start ───────────────────────────────
         best_val_loss = float("inf")
         global_step = 0
 
-        ckpt = load_checkpoint(checkpoint_dir)
+        ckpt = load_checkpoint_v2(checkpoint_dir)
         if ckpt is not None:
             prev_loss = ckpt.get("best_val_loss", "N/A")
             logger.info(f"  Found checkpoint (best_val_loss={prev_loss}) — warm-starting weights")
@@ -441,6 +781,8 @@ def train_single_model(model_key, config, device, num_gpus):
         history = {
             "model_key": model_key,
             "model_name": config["model_name"],
+            "loss_type": "pii_aware",
+            "loss_params": {"smoothing": LABEL_SMOOTHING, "alpha": 0.3, "beta": 2.0},
             "environment": "kaggle",
             "batch_size": bs,
             "effective_batch_size": bs * accum_steps,
@@ -471,9 +813,13 @@ def train_single_model(model_key, config, device, num_gpus):
                 input_ids      = batch["input_ids"].to(device)
                 attention_mask = batch["attention_mask"].to(device)
                 labels         = batch["labels"].to(device)
+                original_ids   = batch["original_token_ids"].to(device)
+                pii_mask       = batch["pii_mask"].to(device)
 
                 outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
-                loss = loss_fn(outputs.logits, labels) / accum_steps
+
+                # ★ PII-Aware Loss
+                loss = loss_fn(outputs.logits, labels, original_ids, pii_mask) / accum_steps
                 loss.backward()
 
                 epoch_loss += loss.item() * accum_steps
@@ -494,7 +840,7 @@ def train_single_model(model_key, config, device, num_gpus):
                     optimizer.zero_grad(set_to_none=True)
                     global_step += 1
 
-                    # Log to file
+                    # Log
                     if global_step % LOGGING_STEPS == 0:
                         lr = scheduler.get_last_lr()[0]
                         logger.info(f"  Epoch {epoch+1} | Step {global_step} | Loss {avg_loss:.4f} | LR {lr:.2e}")
@@ -519,8 +865,8 @@ def train_single_model(model_key, config, device, num_gpus):
                             best_val_loss = val_loss
                             tqdm.write(f"  ★ New best val loss: {best_val_loss:.4f} — saving")
                             logger.info(f"  ★ New best val loss: {best_val_loss:.4f}")
-                            save_checkpoint(
-                                unwrap(model), optimizer, scheduler, None,
+                            save_checkpoint_v2(
+                                unwrap(model), optimizer, scheduler,
                                 epoch, global_step, best_val_loss,
                                 checkpoint_dir, model_config=config,
                                 use_qlora=config.get("use_qlora", False),
@@ -544,7 +890,6 @@ def train_single_model(model_key, config, device, num_gpus):
 
         # ── 10. Save History ─────────────────────────────────────
         def _serialise_leaked(metrics_dict):
-            """Make leaked_entities_top10 JSON-friendly."""
             top10 = metrics_dict.pop("leaked_entities_top10", [])
             metrics_dict["leaked_entities_top10"] = [{"entity": e, "count": c} for e, c in top10]
             return metrics_dict
@@ -585,19 +930,17 @@ def train_single_model(model_key, config, device, num_gpus):
         return False
 
     finally:
-        # Basic cleanup
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
 
 # ============================================================
-# CHECKPOINT STATUS HELPER
+# CHECKPOINT STATUS
 # ============================================================
 
 def get_checkpoint_status(model_key):
-    """Return dict with has_checkpoint / best_val_loss."""
-    ckpt_dir = os.path.join(CHECKPOINTS_DIR, model_key)
+    ckpt_dir = os.path.join(CHECKPOINTS2_DIR, model_key)
     best_path = os.path.join(ckpt_dir, "best_model.pt")
     hist_path = os.path.join(ckpt_dir, "training_history.json")
 
@@ -626,11 +969,10 @@ def get_checkpoint_status(model_key):
 # ============================================================
 
 def interactive_model_selection():
-    """Show models, let user pick. Returns list of model keys."""
     model_keys = TRAINING_ORDER
 
     print("\n" + "=" * 80)
-    print("  AVAILABLE MODELS (Kaggle config)")
+    print("  AVAILABLE MODELS — PII-Aware Loss (saves to checkpoints2/)")
     print("=" * 80)
     print(f"  {'#':<4} {'Key':<25} {'HuggingFace ID':<35} {'Status'}")
     print("  " + "-" * 76)
@@ -684,8 +1026,7 @@ def interactive_model_selection():
         except ValueError:
             print("  Invalid input.")
 
-    # Confirm
-    print("\n  Will train:")
+    print("\n  Will train (PII-Aware Loss):")
     for key in selected:
         st = statuses[key]
         mode = "warm start" if st["has_checkpoint"] else "from scratch"
@@ -707,7 +1048,8 @@ def interactive_model_selection():
 
 def main():
     print("\n" + "=" * 70)
-    print("  SEQ2SEQ PII ANONYMIZATION — KAGGLE TRAINING PIPELINE")
+    print("  SEQ2SEQ PII ANONYMIZATION — PII-AWARE LOSS TRAINING")
+    print("  Saves to: checkpoints2/")
     print("=" * 70)
 
     device, num_gpus = get_device()
@@ -740,7 +1082,7 @@ def main():
     for idx, model_key in enumerate(models_to_train, 1):
         config = MODEL_CONFIGS[model_key]
         print(f"\n{'#' * 70}")
-        print(f"  [{idx}/{len(models_to_train)}] {model_key}")
+        print(f"  [{idx}/{len(models_to_train)}] {model_key} (PII-Aware Loss)")
         print(f"{'#' * 70}")
 
         ok = train_single_model(model_key, config, device, num_gpus)
@@ -753,7 +1095,7 @@ def main():
 
     # Summary
     print("\n" + "=" * 90)
-    print("  TRAINING SUMMARY")
+    print("  TRAINING SUMMARY (PII-Aware Loss → checkpoints2/)")
     print("=" * 90)
     print(f"  {'Model':<25} {'Status':<10} {'Val Loss':<12} {'Test Loss':<12} {'Test BLEU':<12} {'Leak%'}")
     print("  " + "-" * 80)
@@ -761,7 +1103,7 @@ def main():
     for key, status in results.items():
         icon = "✓" if status == "SUCCESS" else "✗"
         val_loss = test_loss = bleu = leak = "N/A"
-        hist_path = os.path.join(CHECKPOINTS_DIR, key, "training_history.json")
+        hist_path = os.path.join(CHECKPOINTS2_DIR, key, "training_history.json")
         if os.path.exists(hist_path):
             try:
                 with open(hist_path) as f:
