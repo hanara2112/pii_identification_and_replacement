@@ -171,19 +171,19 @@ MODEL_CONFIGS = {
 class PIIAwareDataset(Dataset):
     """
     Dataset that also produces:
-      - input_token_ids:  tokenized original text (no prefix), padded
-      - pii_mask:         1 at target positions that correspond to PII, 0 otherwise
+      - original_token_ids: tokenized original text (no prefix), padded
+      - pii_mask:           1 at target positions that correspond to PII, 0 otherwise
 
-    The pii_mask is built by:
-      1. Tokenize each entity string from entity_texts
-      2. Find those token subsequences in the input_token_ids
-      3. Mark the corresponding positions in the target as PII
+    The pii_mask is built using CHARACTER OFFSETS:
+      1. Find each entity's character span in the ORIGINAL text via str.find()
+      2. Tokenize the ANONYMIZED text with return_offsets_mapping to get
+         each token's (start_char, end_char) in the anonymized string
+      3. Use a word-level alignment between original and anonymized to map
+         entity character positions → anonymized character positions
+      4. Mark target tokens whose character spans overlap with PII regions
 
-    Since input and target have the same structure (only PII spans differ),
-    the PII positions in the target are at the same word-level offsets.
-    We use a word-alignment approach: tokenize original and anonymized at
-    the word level, find which words differ, then map those word indices
-    back to token positions in the target.
+    This avoids the token-shift problem when PII replacements have different
+    numbers of subword tokens (e.g., "John" → "Elara Vance").
     """
 
     def __init__(
@@ -205,19 +205,45 @@ class PIIAwareDataset(Dataset):
     def __len__(self):
         return len(self.data)
 
-    def _build_pii_mask(self, original_text: str, anonymized_text: str, entity_texts: list,
-                        label_ids: torch.Tensor) -> torch.Tensor:
+    def _find_entity_char_spans(self, text: str, entity_texts: list) -> list:
         """
-        Build a binary mask over the target (label) tokens.
-        1 = this token position is a PII replacement, 0 = non-PII (keep exact).
+        Find all (start_char, end_char) spans of entities in the text.
+        Handles multiple occurrences and overlapping entities.
+        Returns list of (start, end) tuples in the text.
+        """
+        spans = []
+        for entity in entity_texts:
+            if not entity or len(entity) < 1:
+                continue
+            # Find all occurrences of this entity in the text
+            search_start = 0
+            while True:
+                idx = text.find(entity, search_start)
+                if idx == -1:
+                    # Try case-insensitive as fallback
+                    idx = text.lower().find(entity.lower(), search_start)
+                    if idx == -1:
+                        break
+                spans.append((idx, idx + len(entity)))
+                search_start = idx + 1  # allow overlapping matches
+        return spans
 
-        Strategy: tokenize each original entity, find those subword tokens
-        in the tokenized original. The corresponding positions in the target
-        are PII positions (since the sentence structure is identical except
-        for the PII spans).
+    def _build_pii_mask_for_target(self, anonymized_text: str, original_text: str,
+                                    entity_texts: list, label_ids: torch.Tensor) -> torch.Tensor:
+        """
+        Build a binary mask over TARGET (label) tokens using character offsets.
 
-        Fallback: if entity_texts is empty or matching fails, use word-level
-        diff between original and anonymized to detect changed positions.
+        Approach:
+          1. Find entity character spans in ORIGINAL text
+          2. Build word-level alignment: split both texts into words,
+             identify which word indices in the original contain PII
+          3. Map those word indices to the ANONYMIZED text's word positions
+          4. Tokenize anonymized text with offset_mapping to get token→char mapping
+          5. Mark target tokens that fall within PII word boundaries
+
+        This is robust to different-length PII replacements because we align
+        at the word level (which preserves non-PII word order) rather than
+        at the token level (which shifts when token counts differ).
         """
         seq_len = label_ids.size(0)
         pii_mask = torch.zeros(seq_len, dtype=torch.float32)
@@ -225,53 +251,185 @@ class PIIAwareDataset(Dataset):
         if not entity_texts:
             return pii_mask
 
-        # Tokenize original text (without prefix) to get input token ids
-        orig_tokens = self.tokenizer(
-            original_text,
-            max_length=self.max_target_length,
-            truncation=True,
-            padding="max_length",
-            return_tensors="pt",
-        )["input_ids"].squeeze()  # (seq_len,)
+        # ── Step 1: Find entity character spans in the ORIGINAL text ──
+        orig_entity_spans = self._find_entity_char_spans(original_text, entity_texts)
+        if not orig_entity_spans:
+            return pii_mask
 
-        # Tokenize anonymized text to get target token ids
+        # ── Step 2: Identify which WORD indices in original contain PII ──
+        # Split original into words with their character positions
+        orig_words = original_text.split()
+        orig_word_char_starts = []
+        pos = 0
+        for w in orig_words:
+            idx = original_text.find(w, pos)
+            orig_word_char_starts.append(idx)
+            pos = idx + len(w)
+
+        # Mark which word indices overlap with entity spans
+        pii_word_indices = set()
+        for word_idx, word in enumerate(orig_words):
+            word_start = orig_word_char_starts[word_idx]
+            word_end = word_start + len(word)
+            for ent_start, ent_end in orig_entity_spans:
+                # Check overlap
+                if word_start < ent_end and word_end > ent_start:
+                    pii_word_indices.add(word_idx)
+                    break
+
+        if not pii_word_indices:
+            return pii_mask
+
+        # ── Step 3: Map PII word indices to ANONYMIZED text character spans ──
+        # The key insight: non-PII words appear in the same order in both texts.
+        # We align by walking through both word lists simultaneously:
+        #   - non-PII words in original correspond 1:1 to words in anonymized
+        #   - PII words in original correspond to "replacement spans" in anonymized
+        #
+        # We identify the character regions in anonymized_text that correspond
+        # to PII replacements by finding the boundaries between non-PII words.
+
+        anon_words = anonymized_text.split()
+        anon_word_char_starts = []
+        pos = 0
+        for w in anon_words:
+            idx = anonymized_text.find(w, pos)
+            anon_word_char_starts.append(idx)
+            pos = idx + len(w)
+
+        # Build list of non-PII word texts and their positions in original
+        non_pii_anchors = []  # (word_text, orig_word_idx)
+        for i, w in enumerate(orig_words):
+            if i not in pii_word_indices:
+                non_pii_anchors.append((w, i))
+
+        # Find PII character spans in anonymized text by identifying gaps
+        # between matched non-PII anchors
+        anon_pii_char_spans = []
+
+        # Match non-PII anchors greedily in the anonymized word list
+        anon_idx = 0
+        prev_anon_end_char = 0  # character position after last matched non-PII word
+        anchor_idx = 0
+        first_pii_word_idx = min(pii_word_indices) if pii_word_indices else len(orig_words)
+
+        # If PII starts before first non-PII anchor, mark from beginning
+        # Walk through anchors and find their positions in anonymized text
+        matched_anon_positions = []  # (anchor_idx_in_list, anon_word_idx, orig_word_idx)
+
+        for a_idx, (anchor_word, orig_w_idx) in enumerate(non_pii_anchors):
+            # Find this anchor word in anonymized words starting from anon_idx
+            found = False
+            for j in range(anon_idx, len(anon_words)):
+                if anon_words[j] == anchor_word:
+                    matched_anon_positions.append((a_idx, j, orig_w_idx))
+                    anon_idx = j + 1
+                    found = True
+                    break
+            if not found:
+                # Anchor word not found (maybe augmentation changed it) — skip
+                continue
+
+        # Now identify PII spans in anonymized text as the gaps between anchors
+        # Gap before first anchor
+        if matched_anon_positions:
+            first_match_anon_idx = matched_anon_positions[0][1]
+            first_match_orig_idx = matched_anon_positions[0][2]
+            # If there are PII words before the first anchor in original
+            if any(i < first_match_orig_idx for i in pii_word_indices):
+                if first_match_anon_idx > 0:
+                    # PII region: from start to first anchor
+                    span_end = anon_word_char_starts[first_match_anon_idx]
+                    anon_pii_char_spans.append((0, span_end))
+
+            # Gaps between consecutive anchors
+            for k in range(len(matched_anon_positions) - 1):
+                _, curr_anon_idx, curr_orig_idx = matched_anon_positions[k]
+                _, next_anon_idx, next_orig_idx = matched_anon_positions[k + 1]
+
+                # Check if there are PII words between these two anchors in original
+                has_pii_between = any(
+                    curr_orig_idx < i < next_orig_idx for i in pii_word_indices
+                )
+                if has_pii_between and next_anon_idx > curr_anon_idx + 1:
+                    # PII region: from end of current anchor to start of next anchor
+                    span_start = anon_word_char_starts[curr_anon_idx] + len(anon_words[curr_anon_idx])
+                    span_end = anon_word_char_starts[next_anon_idx]
+                    anon_pii_char_spans.append((span_start, span_end))
+
+            # Gap after last anchor
+            last_match_anon_idx = matched_anon_positions[-1][1]
+            last_match_orig_idx = matched_anon_positions[-1][2]
+            if any(i > last_match_orig_idx for i in pii_word_indices):
+                if last_match_anon_idx < len(anon_words) - 1:
+                    span_start = anon_word_char_starts[last_match_anon_idx] + len(anon_words[last_match_anon_idx])
+                    anon_pii_char_spans.append((span_start, len(anonymized_text)))
+        else:
+            # No anchors matched — entire text might be PII (rare edge case)
+            # Fall back: mark everything as PII
+            anon_pii_char_spans.append((0, len(anonymized_text)))
+
+        if not anon_pii_char_spans:
+            return pii_mask
+
+        # ── Step 4: Tokenize anonymized text with offset_mapping ──
+        try:
+            anon_enc = self.tokenizer(
+                anonymized_text,
+                max_length=self.max_target_length,
+                truncation=True,
+                padding="max_length",
+                return_offsets_mapping=True,
+                return_tensors="pt",
+            )
+            offset_mapping = anon_enc["offset_mapping"].squeeze(0)  # (seq_len, 2)
+        except Exception:
+            # Fallback if offset_mapping not supported: use entity subsequence matching
+            return self._build_pii_mask_fallback(anonymized_text, entity_texts, label_ids)
+
+        # ── Step 5: Mark tokens whose char spans overlap with PII regions ──
+        for tok_idx in range(min(seq_len, offset_mapping.size(0))):
+            if label_ids[tok_idx] == -100:  # skip padding
+                continue
+            tok_start = offset_mapping[tok_idx, 0].item()
+            tok_end = offset_mapping[tok_idx, 1].item()
+            if tok_start == 0 and tok_end == 0:  # special token
+                continue
+            # Check if this token overlaps with any PII span
+            for pii_start, pii_end in anon_pii_char_spans:
+                if tok_start < pii_end and tok_end > pii_start:
+                    pii_mask[tok_idx] = 1.0
+                    break
+
+        return pii_mask
+
+    def _build_pii_mask_fallback(self, anonymized_text: str, entity_texts: list,
+                                  label_ids: torch.Tensor) -> torch.Tensor:
+        """
+        Fallback PII mask when offset_mapping is not available.
+        Uses entity subsequence matching in token space.
+        """
+        seq_len = label_ids.size(0)
+        pii_mask = torch.zeros(seq_len, dtype=torch.float32)
+
         anon_tokens = self.tokenizer(
             anonymized_text,
             max_length=self.max_target_length,
             truncation=True,
             padding="max_length",
             return_tensors="pt",
-        )["input_ids"].squeeze()  # (seq_len,)
+        )["input_ids"].squeeze()
 
-        pad_id = self.tokenizer.pad_token_id
-
-        # Method 1: Token-level diff — mark positions where orig != anon
-        # This is the most reliable way since tokenization aligns naturally
-        # for sentences that only differ in PII spans.
-        min_len = min(len(orig_tokens), len(anon_tokens), seq_len)
-        for i in range(min_len):
-            if orig_tokens[i] == pad_id and anon_tokens[i] == pad_id:
-                continue
-            if orig_tokens[i] != anon_tokens[i]:
-                # This position changed between original and anonymized → PII
-                if label_ids[i] != -100:  # not padding in labels
-                    pii_mask[i] = 1.0
-
-        # Method 2 (supplementary): also mark positions matching entity subwords
-        # in the original, in case token-level diff missed anything due to
-        # length differences in PII replacements (e.g., "John" → "Elara Vance")
         for entity in entity_texts:
             if not entity or len(entity) < 2:
                 continue
-            # Tokenize the entity string
             ent_ids = self.tokenizer.encode(entity, add_special_tokens=False)
             if not ent_ids:
                 continue
-            # Scan for this subsequence in orig_tokens
             ent_len = len(ent_ids)
+            min_len = min(len(anon_tokens), seq_len)
             for start in range(min_len - ent_len + 1):
-                if orig_tokens[start:start + ent_len].tolist() == ent_ids:
-                    # Mark corresponding positions in target as PII
+                if anon_tokens[start:start + ent_len].tolist() == ent_ids:
                     for j in range(start, min(start + ent_len, seq_len)):
                         if label_ids[j] != -100:
                             pii_mask[j] = 1.0
@@ -319,8 +477,10 @@ class PIIAwareDataset(Dataset):
             return_tensors="pt",
         )
 
-        # Build PII mask
-        pii_mask = self._build_pii_mask(original_text, anonymized_text, entity_texts, label_ids)
+        # Build PII mask using character-offset approach
+        pii_mask = self._build_pii_mask_for_target(
+            anonymized_text, original_text, entity_texts, label_ids
+        )
 
         return {
             "input_ids": model_inputs["input_ids"].squeeze(),
@@ -1104,7 +1264,7 @@ def main():
         icon = "✓" if status == "SUCCESS" else "✗"
         val_loss = test_loss = bleu = leak = "N/A"
         hist_path = os.path.join(CHECKPOINTS2_DIR, key, "training_history.json")
-        if os.path.exists(hist_path):
+        if (os.path.exists(hist_path)):
             try:
                 with open(hist_path) as f:
                     h = json.load(f)
