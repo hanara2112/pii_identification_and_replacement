@@ -1,0 +1,558 @@
+\documentclass[11pt, a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{tcolorbox}
+\usepackage{enumitem}
+
+\tcbuselibrary{skins, breakable, listings}
+
+% Code listing style
+\lstdefinestyle{bash}{
+    language=bash,
+    basicstyle=\ttfamily\small,
+    backgroundcolor=\color{gray!10},
+    frame=single,
+    framerule=0pt,
+    breaklines=true,
+    columns=fullflexible,
+    keepspaces=true,
+    showstringspaces=false,
+    commentstyle=\color{green!50!black},
+    keywordstyle=\color{blue!70!black},
+    stringstyle=\color{red!70!black},
+    morekeywords={pip, python, kaggle, mkdir, cd, wget, git, unzip},
+}
+
+\lstdefinestyle{python}{
+    language=Python,
+    basicstyle=\ttfamily\small,
+    backgroundcolor=\color{blue!3},
+    frame=single,
+    framerule=0pt,
+    breaklines=true,
+    columns=fullflexible,
+    keepspaces=true,
+    showstringspaces=false,
+    commentstyle=\color{green!50!black},
+    keywordstyle=\color{blue!70!black}\bfseries,
+    stringstyle=\color{red!70!black},
+}
+
+\newtcolorbox{important}[1][]{
+    colback=red!5!white, colframe=red!75!black,
+    fonttitle=\bfseries, title={#1}, breakable
+}
+\newtcolorbox{tip}[1][]{
+    colback=green!5!white, colframe=green!50!black,
+    fonttitle=\bfseries, title={#1}, breakable
+}
+\newtcolorbox{step}[1][]{
+    colback=blue!5!white, colframe=blue!50!black,
+    fonttitle=\bfseries, title={#1}, breakable
+}
+
+\title{\textbf{Complete Kaggle Training Guide}\\[0.3em]
+\Large DP-Guided Decoupled Mask-and-Fill Pipeline\\
+Step-by-Step from Zero to Trained Models}
+\author{Team: Mr.A}
+\date{\today}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+% ============================================================
+\section{Prerequisites}
+% ============================================================
+
+\subsection{What You Need}
+\begin{itemize}
+    \item A free Kaggle account: \url{https://www.kaggle.com}
+    \item Phone-verified account (required for GPU access)
+    \item Kaggle provides \textbf{30 hours/week} of free GPU (T4 or P100)
+    \item Internet access enabled in the notebook settings
+\end{itemize}
+
+\subsection{Hardware Available on Kaggle}
+\begin{table}[h]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{Accelerator} & \textbf{VRAM} & \textbf{Best For} \\
+\midrule
+GPU T4 $\times$ 2 & 16 GB each & QLoRA training (our pipeline) \\
+GPU P100 $\times$ 1 & 16 GB & Inference + evaluation \\
+TPU v3-8 & 128 GB HBM & Full fine-tuning (not needed for us) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{important}[GPU Quota]
+Kaggle gives 30 GPU hours per week. Our full pipeline takes approximately \textbf{8--12 hours} on a T4 GPU, well within the weekly limit. If you run out, wait for the weekly reset (Saturday UTC) or use a second Kaggle account.
+\end{important}
+
+% ============================================================
+\section{Step 1: Create a New Kaggle Notebook}
+% ============================================================
+
+\begin{step}[Instructions]
+\begin{enumerate}
+    \item Go to \url{https://www.kaggle.com/code}
+    \item Click \textbf{``+ New Notebook''}
+    \item In the right panel, configure:
+    \begin{itemize}
+        \item \textbf{Language}: Python
+        \item \textbf{Accelerator}: GPU T4 $\times$ 2
+        \item \textbf{Internet}: \textbf{ON} (toggle this --- required for downloading models)
+        \item \textbf{Persistence}: Files (so outputs survive session restarts)
+    \end{itemize}
+    \item Rename the notebook to: \texttt{privacy-anonymization-v8}
+\end{enumerate}
+\end{step}
+
+\begin{important}[Internet Must Be ON]
+If Internet is OFF, you cannot download models from Hugging Face or install packages. Toggle it ON in \textbf{Settings $\rightarrow$ Internet $\rightarrow$ On}. You may need to verify your phone number first.
+\end{important}
+
+% ============================================================
+\section{Step 2: Install Dependencies}
+% ============================================================
+
+In the \textbf{first cell} of your notebook, paste:
+
+\begin{lstlisting}[style=bash]
+# Cell 1: Install all dependencies
+!pip install -q -U \
+    "transformers>=4.40.0" \
+    datasets \
+    evaluate \
+    accelerate \
+    "peft>=0.10.0" \
+    bitsandbytes \
+    rouge_score \
+    sacrebleu \
+    sentencepiece \
+    scipy \
+    scikit-learn \
+    bert_score \
+    Faker \
+    opacus \
+    presidio-analyzer \
+    presidio-anonymizer \
+    gradio
+
+# Verify GPU
+import torch
+print(f"GPU available: {torch.cuda.is_available()}")
+print(f"GPU name: {torch.cuda.get_device_name(0)}")
+print(f"VRAM: {torch.cuda.get_device_properties(0).total_mem / 1e9:.1f} GB")
+\end{lstlisting}
+
+\textbf{Expected output:}
+\begin{lstlisting}[style=bash]
+GPU available: True
+GPU name: Tesla T4
+VRAM: 15.8 GB
+\end{lstlisting}
+
+% ============================================================
+\section{Step 3: Upload the Script}
+% ============================================================
+
+You have two options:
+
+\subsection{Option A: Copy-Paste (Recommended)}
+
+\begin{enumerate}
+    \item Open \texttt{script.py} from your local project folder.
+    \item Copy the entire contents.
+    \item In Kaggle, create a new \textbf{Code cell} and paste everything.
+    \item The script is designed with \texttt{\# \%\%} cell markers --- Kaggle will recognize these as cell boundaries if you use ``Convert to cells'' option.
+\end{enumerate}
+
+\subsection{Option B: Upload as Dataset}
+
+\begin{enumerate}
+    \item Go to \url{https://www.kaggle.com/datasets} $\rightarrow$ \textbf{+ New Dataset}
+    \item Upload \texttt{script.py} as a file
+    \item In your notebook, add the dataset: \textbf{+ Add Data $\rightarrow$ Your Datasets}
+    \item Then in a cell:
+\begin{lstlisting}[style=python]
+# Load the script from the dataset
+exec(open("/kaggle/input/your-dataset-name/script.py").read())
+\end{lstlisting}
+\end{enumerate}
+
+\begin{tip}[Recommendation]
+Option A is simpler and lets you edit code directly in Kaggle. The script has \texttt{\# \%\%} markers that work as cell separators in Kaggle notebooks, giving you a clean multi-cell layout.
+\end{tip}
+
+% ============================================================
+\section{Step 4: Configure for Kaggle Environment}
+% ============================================================
+
+Before running, modify the \texttt{Config} class for Kaggle paths:
+
+\begin{lstlisting}[style=python]
+# Cell 2: Override Config for Kaggle
+class Config:
+    MODE = "ALL"
+
+    # Model backbones
+    CENSOR_CHECKPOINT = "microsoft/deberta-v3-base"
+    HALLUC_CHECKPOINT = "google/flan-t5-large"
+    ZEROSHOT_CHECKPOINT = "google/flan-t5-large"  # Use same as halluc to save VRAM
+
+    # Kaggle paths (use /kaggle/working for outputs)
+    OUTPUT_ROOT = "/kaggle/working/privacy_project_v8"
+    MODEL_CENSOR_DIR = "/kaggle/working/privacy_project_v8/censor"
+    MODEL_HALLUC_DIR = "/kaggle/working/privacy_project_v8/hallucinator"
+    EVAL_DIR = "/kaggle/working/privacy_project_v8/evaluation"
+
+    # Hyperparameters (tuned for T4 16GB VRAM)
+    MAX_LEN = 256
+    NER_MAX_LEN = 256
+    BATCH_SIZE = 4            # Smaller batch for T4
+    GRAD_ACCUMULATION = 8     # Effective batch = 32
+    EPOCHS = 3
+    LR_CENSOR = 3e-5
+    LR_HALLUC = 1e-4
+    WARMUP_RATIO = 0.06
+
+    # QLoRA
+    LORA_R = 32
+    LORA_ALPHA = 64
+    LORA_DROPOUT = 0.05
+
+    # DP-SGD
+    ENABLE_DP = True
+    DP_EPSILON = 8.0
+    DP_DELTA = None
+    DP_MAX_GRAD_NORM = 1.0
+
+    # Generation
+    GEN_MAX_TOKENS = 200
+    GEN_NUM_BEAMS = 4
+    GEN_TEMPERATURE = 0.7
+    GEN_TOP_K = 50
+    GEN_TOP_P = 0.9
+    GEN_REPETITION_PENALTY = 1.2
+
+    # Data -- USE SUBSAMPLING FOR FIRST RUN
+    TARGET_SAMPLE_COUNT = 10000   # Start with 10K to verify everything works
+    TEST_SIZE = 0.05
+    NUM_EVAL_SAMPLES = 100
+
+    ENTITY_TYPES = [
+        "PERSON", "LOC", "ORG", "DATE", "PHONE", "EMAIL",
+        "SSN", "CREDIT_CARD", "ADDRESS", "IP_ADDRESS",
+    ]
+\end{lstlisting}
+
+\begin{important}[VRAM Management on T4]
+The T4 has 16GB VRAM. Key settings to avoid OOM (Out of Memory):
+\begin{itemize}[nosep]
+    \item \texttt{BATCH\_SIZE = 4} (not 8 or 16)
+    \item \texttt{GRAD\_ACCUMULATION = 8} (compensates for small batch)
+    \item Always use \texttt{load\_in\_4bit=True} (QLoRA)
+    \item Use \texttt{torch.bfloat16} compute dtype
+    \item If OOM still occurs, reduce \texttt{MAX\_LEN} to 192 or \texttt{LORA\_R} to 16
+\end{itemize}
+\end{important}
+
+% ============================================================
+\section{Step 5: Run the Data Pipeline}
+% ============================================================
+
+\begin{lstlisting}[style=python]
+# Cell 3: Load and prepare data
+# This is already in the script - just run the data pipeline section
+
+# After running, you should see output like:
+# Loading AI4Privacy dataset...
+# Raw dataset size: 500000
+# After PII filter: 487231
+# English subset: 148923
+# Subsampled to 10000
+# Partitions -- Baseline: 950 | Censor (A): 4512 | Hallucinator (B): 4513 | Test: 500
+\end{lstlisting}
+
+\begin{tip}[Quick Test First]
+Set \texttt{TARGET\_SAMPLE\_COUNT = 10000} for your first run. This completes in $\sim$2 hours and lets you verify everything works. Once confirmed, set it to \texttt{None} for the full 150K English dataset ($\sim$8--10 hours).
+\end{tip}
+
+% ============================================================
+\section{Step 6: Train the Censor (Model I)}
+% ============================================================
+
+\begin{lstlisting}[style=python]
+# Cell 4: Train Censor
+# This runs automatically from the script's training section
+# Expected output:
+
+# ============================================================
+# TRAINING CENSOR (Flan-T5-Large + QLoRA, Seq2Seq)
+# ============================================================
+# trainable params: 19,922,944 || all params: 803,430,400 || trainable%: 2.48
+# {'loss': 2.1534, 'step': 25}
+# {'loss': 1.4823, 'step': 50}
+# {'loss': 0.9127, 'step': 75}
+# ...
+# Loss curve saved: /kaggle/working/.../censor/loss_curve.png
+# Censor training complete.
+\end{lstlisting}
+
+\textbf{Expected training time:} $\sim$45 minutes (10K samples) to $\sim$4 hours (full dataset) on T4.
+
+% ============================================================
+\section{Step 7: Train the Hallucinator (Model II)}
+% ============================================================
+
+\begin{lstlisting}[style=python]
+# Cell 5: Train Hallucinator
+# Runs automatically after Censor training
+# Expected output:
+
+# ============================================================
+# TRAINING HALLUCINATOR (Flan-T5-Large + QLoRA)
+# ============================================================
+# trainable params: 19,922,944 || all params: 803,430,400 || trainable%: 2.48
+# {'loss': 3.2145, 'step': 25}
+# {'loss': 1.8934, 'step': 50}
+# ...
+# Loss curve saved: /kaggle/working/.../hallucinator/loss_curve.png
+# Hallucinator training complete.
+\end{lstlisting}
+
+\textbf{Expected training time:} Same as Censor ($\sim$45 minutes for 10K, $\sim$4 hours for full).
+
+% ============================================================
+\section{Step 8: Run Evaluation}
+% ============================================================
+
+The evaluation section runs automatically after training:
+
+\begin{lstlisting}[style=python]
+# Cell 6: Evaluation runs automatically
+# Expected output:
+
+# ============================================================
+# COMPREHENSIVE EVALUATION
+# ============================================================
+#
+# --- Approach 2: Presidio Baseline ---
+#   Leakage: {'exact_leakage_rate': 0.03, ...}
+#   Utility: {'BLEU': 28.4, 'ROUGE-L': 45.2, ...}
+#
+# --- Approach 3: Zero-Shot LLM ---
+#   Leakage: {'exact_leakage_rate': 0.08, ...}
+#   Utility: {'BLEU': 32.1, 'ROUGE-L': 51.7, ...}
+#
+# --- Approach 4: Decoupled Mask-and-Fill ---
+#   Leakage: {'exact_leakage_rate': 0.005, ...}
+#   Utility: {'BLEU': 38.2, 'ROUGE-L': 58.3, ...}
+#
+# COMPARISON SUMMARY
+# | Method    | Exact_Leakage% | BLEU  | BERTScore_F1 |
+# |-----------|----------------|-------|--------------|
+# | Presidio  |           3.00 | 28.40 |        82.30 |
+# | ZeroShot  |           8.00 | 32.10 |        85.10 |
+# | Decoupled |           0.50 | 38.20 |        91.40 |
+\end{lstlisting}
+
+% ============================================================
+\section{Step 9: Save and Download Results}
+% ============================================================
+
+\begin{lstlisting}[style=python]
+# Cell 7: Package all outputs for download
+import shutil, os
+
+output_dir = "/kaggle/working/privacy_project_v8"
+
+# Zip everything
+shutil.make_archive(
+    "/kaggle/working/final_results",
+    "zip",
+    output_dir
+)
+
+print("Zip created at: /kaggle/working/final_results.zip")
+print(f"Size: {os.path.getsize('/kaggle/working/final_results.zip') / 1e6:.1f} MB")
+
+# List all output files
+for root, dirs, files in os.walk(output_dir):
+    for f in files:
+        path = os.path.join(root, f)
+        size = os.path.getsize(path) / 1e6
+        print(f"  {path} ({size:.1f} MB)")
+\end{lstlisting}
+
+\begin{step}[Download Your Results]
+\begin{enumerate}
+    \item In Kaggle, click \textbf{``Save Version''} (top right) $\rightarrow$ \textbf{``Save \& Run All''}
+    \item Wait for execution to complete (check the ``Versions'' tab)
+    \item Go to the Output tab of your notebook
+    \item Download \texttt{final\_results.zip}
+    \item This contains: trained model adapters, loss curves, evaluation CSVs, comparison tables
+\end{enumerate}
+\end{step}
+
+% ============================================================
+\section{Step 10: Full Production Run}
+% ============================================================
+
+Once the quick test (Step 5--9) succeeds, run the full pipeline:
+
+\begin{lstlisting}[style=python]
+# Change these in Config:
+Config.TARGET_SAMPLE_COUNT = None   # Use FULL dataset
+Config.NUM_EVAL_SAMPLES = 200      # More thorough evaluation
+Config.EPOCHS = 3                  # Keep at 3
+\end{lstlisting}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lrr}
+\toprule
+\textbf{Stage} & \textbf{Quick Test (10K)} & \textbf{Full Run (150K)} \\
+\midrule
+Data loading & 2 min & 5 min \\
+Censor training & 45 min & 4 hrs \\
+Hallucinator training & 45 min & 4 hrs \\
+Presidio baseline & 5 min & 10 min \\
+Zero-shot baseline & 15 min & 30 min \\
+Evaluation & 10 min & 30 min \\
+\midrule
+\textbf{Total} & \textbf{$\sim$2 hrs} & \textbf{$\sim$9 hrs} \\
+\bottomrule
+\end{tabular}
+\caption{Expected execution times on Kaggle T4 GPU.}
+\end{table}
+
+% ============================================================
+\section{Troubleshooting}
+% ============================================================
+
+\subsection{Common Issues}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{p{4cm}p{4cm}p{4cm}}
+\toprule
+\textbf{Error} & \textbf{Cause} & \textbf{Fix} \\
+\midrule
+\texttt{CUDA out of memory} & Batch too large for T4 & Set \texttt{BATCH\_SIZE=2}, \texttt{GRAD\_ACCUMULATION=16} \\
+\midrule
+\texttt{RuntimeError: Expected all tensors on same device} & Mixed CPU/GPU tensors & Add \texttt{.to(device)} to all inputs before generation \\
+\midrule
+\texttt{Connection error} downloading model & Internet not enabled & Settings $\rightarrow$ Internet $\rightarrow$ ON \\
+\midrule
+\texttt{No module named 'bitsandbytes'} & Deps not installed & Re-run Cell 1 (install cell) \\
+\midrule
+Training loss stuck at high value & LR too high or data issue & Lower LR to \texttt{5e-5}; verify data pipeline output \\
+\midrule
+\texttt{Disk quota exceeded} & Kaggle has 20GB working dir & Delete intermediate checkpoints: \\
+& & \texttt{!rm -rf /kaggle/working/*/checkpoint-*} \\
+\midrule
+Session timeout (12hr limit) & Kaggle kills sessions at 12hrs & Use \texttt{Save \& Run All} for unattended execution \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{VRAM Optimization Checklist}
+
+If you encounter OOM errors, apply these in order:
+
+\begin{enumerate}
+    \item \textbf{Reduce batch size}: \texttt{BATCH\_SIZE = 2} (increase \texttt{GRAD\_ACCUMULATION} proportionally)
+    \item \textbf{Reduce sequence length}: \texttt{MAX\_LEN = 192} or \texttt{128}
+    \item \textbf{Reduce LoRA rank}: \texttt{LORA\_R = 16} (from 32)
+    \item \textbf{Use gradient checkpointing}: Add \texttt{gradient\_checkpointing=True} to training args
+    \item \textbf{Clear cache between models}:
+\begin{lstlisting}[style=python]
+import gc, torch
+gc.collect()
+torch.cuda.empty_cache()
+\end{lstlisting}
+    \item \textbf{Downgrade model}: Use \texttt{google/flan-t5-base} (250M) instead of \texttt{flan-t5-large} (780M)
+\end{enumerate}
+
+% ============================================================
+\section{Notebook Cell Structure (Copy-Paste Reference)}
+% ============================================================
+
+For the cleanest Kaggle experience, organize your notebook as these cells:
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{clll}
+\toprule
+\textbf{Cell} & \textbf{Type} & \textbf{Content} & \textbf{Run Time} \\
+\midrule
+1 & Code & Install dependencies & 2 min \\
+2 & Code & Imports + Config (override for Kaggle) & 10 sec \\
+3 & Code & Data pipeline (\texttt{load\_ai4privacy} + \texttt{prepare\_data}) & 3 min \\
+4 & Code & Train Censor (\texttt{train\_censor\_seq2seq}) & 45 min \\
+5 & Code & Train Hallucinator (\texttt{train\_hallucinator}) & 45 min \\
+6 & Code & Presidio baseline (\texttt{run\_presidio\_baseline}) & 5 min \\
+7 & Code & Zero-shot baseline (\texttt{run\_zeroshot\_baseline}) & 15 min \\
+8 & Code & Decoupled inference (\texttt{run\_decoupled\_pipeline}) & 10 min \\
+9 & Code & Evaluation metrics + comparison table & 5 min \\
+10 & Code & Save \& zip results & 1 min \\
+\bottomrule
+\end{tabular}
+\caption{Recommended cell layout for Kaggle notebook.}
+\end{table}
+
+% ============================================================
+\section{Verifying Your Results}
+% ============================================================
+
+After the full run, you should have these files in \texttt{/kaggle/working/privacy\_project\_v8/}:
+
+\begin{lstlisting}[style=bash]
+privacy_project_v8/
+  censor/
+    best/                    # Trained Censor adapter weights
+      adapter_config.json
+      adapter_model.safetensors
+    loss_curve.png           # Training loss plot
+  hallucinator/
+    best/                    # Trained Hallucinator adapter weights
+      adapter_config.json
+      adapter_model.safetensors
+    loss_curve.png
+  evaluation/
+    decoupled_results.csv    # Per-example anonymization results
+    comparison_summary.csv   # Method comparison table
+    all_results.json         # All metrics in JSON
+\end{lstlisting}
+
+\subsection{Sanity Checks}
+\begin{enumerate}
+    \item \textbf{Loss curves}: Should show decreasing trend; final loss $< 1.0$ for both models.
+    \item \textbf{Entity leakage rate}: Decoupled method should have $< 1\%$ exact leakage.
+    \item \textbf{BERTScore}: Should be $> 0.85$ for the decoupled method.
+    \item \textbf{Sample outputs}: Open \texttt{decoupled\_results.csv} and manually verify that:
+    \begin{itemize}
+        \item Names are replaced with different realistic names
+        \item Locations are replaced with different real locations
+        \item Grammar is preserved
+        \item Non-entity text is unchanged
+    \end{itemize}
+\end{enumerate}
+
+\begin{tip}[Save Your Notebook Version]
+Always click \textbf{``Save Version'' $\rightarrow$ ``Save \& Run All (Commit)''} before closing. This creates a permanent snapshot with all outputs. You can download outputs from the ``Output'' tab of any committed version, even weeks later.
+\end{tip}
+
+\end{document}

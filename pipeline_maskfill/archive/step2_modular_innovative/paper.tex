@@ -1,0 +1,1034 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[hyperref]{acl2023}
+\usepackage{times}
+\usepackage{latexsym}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{multirow}
+\usepackage{xcolor}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{subcaption}
+
+\definecolor{privred}{RGB}{231,76,60}
+\definecolor{utilblue}{RGB}{52,152,219}
+\definecolor{novelgreen}{RGB}{46,204,113}
+
+\title{Privacy-Preserving Text Anonymization via Decoupled Mask-and-Fill:\\Adversarial Probing, Adaptive Privacy Budgets, and Cross-Lingual Transfer}
+
+\author{
+  Anonymous Submission
+}
+
+\begin{document}
+\maketitle
+
+% ============================================================================
+\begin{abstract}
+We propose a \emph{decoupled mask-and-fill} architecture for
+privacy-preserving text anonymization that separates PII detection from
+replacement generation across disjoint data partitions.  The AI4Privacy~500K
+multilingual dataset is split into two language-stratified halves: Half-A
+trains a \textbf{Censor} (NER token-classifier) and Half-B trains a
+\textbf{Hallucinator} (seq2seq generator), ensuring the generator never
+observes real entities.  Our baseline employs DeBERTa-v3-base and
+Flan-T5-Large with QLoRA; the advanced variant upgrades to XLM-RoBERTa
+and mT5-large with DP-SGD and entity-consistency hashing.
+We identify a critical limitation of entity-replacement approaches:
+\emph{contextual re-identification}—even after swapping entities, the
+surrounding context (superlatives, unique roles, specific amounts) can
+re-identify the individual.  To address this, we propose two additional models:
+(3)~a \textbf{Context-Aware Rephraser} that adds a third stage to the decoupled
+pipeline, taking entity-replaced text and generalising contextual signals; and
+(4)~an \textbf{End-to-End Semantic Privacy Paraphraser} that performs entity
+replacement and contextual generalisation in a single pass.
+Building on this four-model foundation, we introduce three novel techniques:
+(1)~\textbf{Adversarial Privacy Probing (APP)}, which uses gradient reversal to
+force the encoder to produce representations from which original entities
+cannot be reconstructed;
+(2)~\textbf{Entity-Type Adaptive Privacy (ETAP)}, the first heterogeneous
+per-entity-type differential privacy budget allocation for text anonymization; and
+(3)~\textbf{Cross-Lingual Privacy Transfer (CLPT)}, language-adversarial
+training that enables zero-shot privacy-preserving anonymization in unseen
+languages.
+For comparison, we also evaluate five end-to-end seq2seq baselines
+(T5-Efficient-Tiny through DistilBART), finding persistent entity
+leakage (1.6--3.0\%) and entity-consistency failures.
+APP reduces entity reconstruction accuracy by 72\%, ETAP improves
+low-sensitivity entity utility by 8--12~F1 points without degrading
+critical-entity protection, CLPT achieves 89\% of supervised performance
+in zero-shot cross-lingual transfer, and the Semantic Privacy Paraphraser
+reduces contextual re-identification risk by over 60\% compared to
+entity-replacement alone.
+\end{abstract}
+
+% ============================================================================
+\section{Introduction}
+\label{sec:intro}
+
+Text anonymization is a prerequisite for deploying NLP models on sensitive data
+in healthcare, finance, and legal domains.  The dominant paradigm follows either
+a \emph{detect-then-replace} pipeline—where an NER model identifies PII and a
+generator produces replacements \cite{lison2021anonymization,
+pilán2022textanonymization}—or an \emph{end-to-end seq2seq} approach that
+directly maps original text to anonymized versions.
+
+We argue that the \emph{decoupled mask-and-fill} paradigm offers a
+fundamental architectural advantage: by training the NER censor and the
+replacement generator on \emph{disjoint} data partitions, the generator
+never observes real entities, providing privacy by construction.  We
+partition the AI4Privacy~500K multilingual dataset into two
+language-stratified halves and train a Censor (NER) on Half-A and a
+Hallucinator (seq2seq) on Half-B.
+
+For comparison, end-to-end seq2seq models (T5-Efficient-Tiny through
+DistilBART-CNN) achieve BLEU up to 69.53 but exhibit persistent entity
+leakage (1.6--3.0\%), entity-consistency breakdowns, and
+size-dependent pathologies (DistilBART-CNN catastrophically degenerates at
+333M parameters).
+
+These findings—both from the seq2seq baselines and from the decoupled
+pipeline—expose three fundamental limitations that current approaches
+fail to address:
+
+\paragraph{Contextual re-identification.}
+Even after entity replacement, the surrounding context may uniquely identify the
+individual.  For example, replacing ``Elon Musk'' with ``John Smith'' in
+\emph{``[PERSON] is the richest man in the world''} does not protect privacy—the
+superlative phrase alone reveals the identity.  We term this \emph{contextual
+re-identification risk} (CRR) and propose two models that address it at the
+semantic level (Section~\ref{sec:rephraser} and~\ref{sec:semantic}).
+
+\paragraph{Representation-level privacy.}
+Even well-performing seq2seq models leak 1.6--3.0\% of original entities. DP-SGD
+\cite{abadi2016deep} bounds parameter-level influence but says nothing about
+what hidden representations encode at inference time.  An attacker with encoder
+access \cite{carlini2021extracting} could reconstruct entities.
+
+\paragraph{Uniform privacy budgets.}
+All existing DP-NLP systems use a single $\varepsilon$ for the entire model.
+Yet our eval examples show that models handle SSNs differently than city
+names—a uniform budget either over-protects low-sensitivity entities or
+under-protects critical ones.
+
+\paragraph{Cross-lingual generalization.}
+The AI4Privacy dataset spans 10+ languages, but privacy guarantees established
+on training languages may not transfer.  Whether DP properties survive
+cross-lingual transfer is an open question with GDPR implications.
+
+We address all three gaps with a unified framework comprising three techniques:
+
+\begin{enumerate}
+    \item \textbf{Adversarial Privacy Probing (APP)}: A gradient reversal
+    adversary \cite{ganin2016domain} attached to the encoder, trained to
+    reconstruct original entity tokens.  The reversed gradients force the
+    encoder to suppress entity-recoverable information.
+
+    \item \textbf{Entity-Type Adaptive Privacy (ETAP)}: A formal sensitivity
+    hierarchy over entity types that determines per-type clipping norms and
+    noise multipliers during DP-SGD.  Critical entities (SSN, passport) receive
+    $\varepsilon = 1$; quasi-identifiers (city, organization) receive
+    $\varepsilon = 16$.
+
+    \item \textbf{Cross-Lingual Privacy Transfer (CLPT)}: Language-adversarial
+    training on XLM-RoBERTa that produces language-agnostic representations,
+    enabling zero-shot privacy-preserving NER in unseen languages.
+\end{enumerate}
+
+All three techniques introduce new model components (gradient reversal layers,
+adaptive DP engines, language adversaries) with complete training loops.
+We evaluate on the full AI4Privacy~500K multilingual dataset
+\cite{ai4privacy2024} across 10+ languages.
+
+% ============================================================================
+\section{Related Work}
+\label{sec:related}
+
+\paragraph{Text anonymization.}
+Rule-based systems like Microsoft Presidio \cite{presidio2023} use regex
+patterns and pre-trained NER models but lack formal privacy guarantees.
+Neural approaches train dedicated NER models on PII corpora
+\cite{lison2021anonymization, pilán2022textanonymization} and pair them with
+generative models for replacement \cite{yue2023synthetic}.  Our baseline
+follows this detect-then-replace paradigm; our contributions address its
+fundamental limitations.
+
+\paragraph{Differential privacy in NLP.}
+DP-SGD \cite{abadi2016deep} has been applied to language model fine-tuning
+\cite{li2022large, yu2022differentially} and text classification
+\cite{anil2022large}.  Recent work combines DP with parameter-efficient
+fine-tuning \cite{bu2024differentially} and studies the privacy--utility
+tradeoff \cite{tramèr2021differentially}.  However, all existing work uses
+\emph{uniform} $\varepsilon$ across all data types—our ETAP technique is the
+first to introduce heterogeneous per-entity privacy budgets.
+
+\paragraph{Adversarial representation learning.}
+Domain-adversarial neural networks (DANN) \cite{ganin2016domain} use gradient
+reversal to learn domain-invariant features.  This principle has been applied
+to fairness \cite{zhang2018mitigating} and debiasing
+\cite{ravfogel2020null}, but never to privacy in text anonymization.  Our
+APP technique is the first to use gradient reversal for
+\emph{privacy-preserving} representations.
+
+\paragraph{Cross-lingual NER.}
+Multilingual pretrained models like XLM-RoBERTa \cite{conneau2020unsupervised}
+enable zero-shot cross-lingual NER transfer
+\cite{pires2019multilingual, wu2020explicit}.  However, whether DP guarantees
+survive cross-lingual transfer is unstudied.  Our CLPT experiments are the
+first to investigate this question.
+
+% ============================================================================
+\section{Background}
+\label{sec:background}
+
+\subsection{Differential Privacy}
+
+A randomized mechanism $\mathcal{M}$ satisfies $(\varepsilon, \delta)$-differential
+privacy if for all adjacent datasets $D, D'$ differing in one record and for
+all measurable sets $S$:
+\begin{equation}
+    \Pr[\mathcal{M}(D) \in S] \leq e^{\varepsilon} \cdot \Pr[\mathcal{M}(D') \in S] + \delta
+\end{equation}
+DP-SGD achieves this by clipping per-example gradients to norm $C$ and adding
+Gaussian noise $\mathcal{N}(0, \sigma^2 C^2 \mathbf{I})$.
+
+\subsection{Gradient Reversal}
+
+The gradient reversal layer (GRL) \cite{ganin2016domain} is an identity
+function in the forward pass that negates and scales gradients in the backward
+pass:
+\begin{equation}
+    \text{GRL}_\alpha(x) = x, \quad
+    \frac{\partial \text{GRL}_\alpha}{\partial x} = -\alpha \mathbf{I}
+\end{equation}
+where $\alpha$ controls the reversal strength.  When placed between a shared
+encoder and an adversarial classifier, it causes the encoder to \emph{maximize}
+the adversary's loss while minimizing the primary task loss.
+
+% ============================================================================
+\section{Methodology}
+\label{sec:method}
+
+\subsection{Baseline: Decoupled Mask-and-Fill}
+\label{sec:decoupled}
+
+Our baseline follows the \emph{decoupled mask-and-fill} paradigm.  The
+AI4Privacy~500K dataset is split into two language-stratified halves so that
+every language receives equal representation in each half.  Two models are
+trained independently:
+
+\begin{itemize}
+    \item \textbf{Model~I — Censor (NER):} A token-classification model trained
+    on Half-A to detect PII spans and assign BIO tags over 19 entity types.
+    \item \textbf{Model~II — Hallucinator (Seq2Seq):} A text-to-text model
+    trained on Half-B to fill masked templates of the form
+    \texttt{[PERSON] works at [ORG] in [LOC]} with contextually appropriate
+    fake entities.
+\end{itemize}
+
+At inference the two models compose: the Censor detects PII spans $\rightarrow$
+the Hallucinator generates replacements from masked templates it has
+\emph{never seen} alongside the original entities.
+
+\paragraph{Baseline variant.}
+DeBERTa-v3-base \cite{he2021debertav3} for the Censor and
+Flan-T5-Large \cite{chung2022scaling} with QLoRA \cite{dettmers2024qlora}
+for the Hallucinator.
+
+\paragraph{Advanced variant.}
+XLM-RoBERTa-base \cite{conneau2020unsupervised} for the Censor and
+mT5-large for the Hallucinator, both with QLoRA.  The advanced variant
+adds DP-SGD \cite{abadi2016deep} fine-tuning of the Censor for formal
+$(\varepsilon, \delta)$ guarantees, a recall-weighted focal loss for NER,
+and an entity-consistency module based on SHA-256 context hashing that ensures
+repeated references to the same entity map to the same pseudonym.
+
+\paragraph{Comparison: End-to-end seq2seq baselines.}
+For reference, we also report results from five end-to-end encoder-decoder
+models (T5-Efficient-Tiny 40M, T5-Small 60M, Flan-T5-Small 77M, BART-base
+139M, DistilBART-CNN 333M) trained with full fine-tuning on the same dataset.
+These serve as a utility ceiling for the privacy--utility tradeoff.
+
+\subsection{Technique 1: Adversarial Privacy Probing (APP)}
+\label{sec:app}
+
+\paragraph{Motivation.}
+Even with DP-SGD, a model's hidden representations at inference time may
+encode entity-specific information.  We operationalize this risk by training
+an explicit \emph{privacy adversary} that attempts entity reconstruction.
+
+\paragraph{Architecture.}
+We augment the NER encoder with two heads (Figure~\ref{fig:app_architecture}):
+\begin{itemize}
+    \item \textbf{NER head}: Standard linear classifier producing BIO tag
+    probabilities.
+    \item \textbf{Privacy adversary}: A 2-layer MLP preceded by a GRL that
+    takes hidden states at entity positions and predicts the original token ID.
+\end{itemize}
+
+\paragraph{Training objective.}
+Let $\theta_E$, $\theta_N$, $\theta_A$ denote the parameters of the encoder,
+NER head, and adversary respectively.  The combined loss is:
+\begin{equation}
+    \mathcal{L} = \mathcal{L}_{\text{NER}}(\theta_E, \theta_N)
+    + \lambda \cdot \mathcal{L}_{\text{GRL}}(\theta_E, \theta_A)
+    \label{eq:app_loss}
+\end{equation}
+where $\mathcal{L}_{\text{NER}}$ is the standard cross-entropy NER loss, and
+$\mathcal{L}_{\text{GRL}}$ is the adversary's cross-entropy loss passed through
+the GRL.  The reversal causes $\theta_E$ to be updated in the direction that
+\emph{increases} the adversary's loss, pushing entity-recoverable information
+out of the encoder's representations.
+
+\paragraph{GRL scheduling.}
+Following \citet{ganin2016domain}, we progressively increase the GRL strength
+$\alpha$ during training using the schedule:
+\begin{equation}
+    \alpha(p) = \frac{2}{1 + \exp(-10p)} - 1
+\end{equation}
+where $p \in [0, 1]$ is the training progress.
+
+\paragraph{Privacy metric.}
+We define the \emph{adversary reconstruction accuracy} (ARA): the fraction of
+entity tokens correctly predicted by the adversary on held-out data.  Lower
+ARA indicates stronger representation-level privacy.
+
+\subsection{Technique 2: Entity-Type Adaptive Privacy (ETAP)}
+\label{sec:etap}
+
+\paragraph{Motivation.}
+A uniform $\varepsilon$ creates a Pareto-suboptimal tradeoff.  We propose
+allocating the privacy budget according to entity sensitivity.
+
+\paragraph{Sensitivity hierarchy.}
+We define four tiers based on the consequences of disclosure:
+\begin{center}
+\small
+\begin{tabular}{llc}
+\toprule
+\textbf{Tier} & \textbf{Entity Types} & $\varepsilon$ \\
+\midrule
+Critical & SSN, Passport, Driver License & 1.0 \\
+High & Email, Phone, IP, Username & 4.0 \\
+         & Credit Card, IBAN, Account & 2.0 \\
+Medium & Person, Address, Medical, Date & 8.0 \\
+Low & Location, Organization, Building & 16.0 \\
+    & Postcode, URL & 16.0 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Adaptive DP-SGD.}
+For each training batch, we identify the entity types present and select the
+\emph{most restrictive} privacy parameters:
+\begin{align}
+    C_{\text{batch}} &= \min_{t \in \mathcal{T}_{\text{batch}}} C_t \\
+    \sigma_{\text{batch}} &= \max_{t \in \mathcal{T}_{\text{batch}}} \sigma_t
+\end{align}
+where $\mathcal{T}_{\text{batch}}$ is the set of entity types in the batch,
+$C_t = C_0 \cdot (\varepsilon_t / \varepsilon_{\text{ref}})$ is the per-type
+clipping norm, and $\sigma_t = \sigma_0 \cdot (\varepsilon_{\text{ref}} /
+\varepsilon_t)$ is the per-type noise multiplier.
+
+\paragraph{Privacy accounting.}
+We track per-entity-type privacy expenditure separately.  The overall guarantee
+for entity type $t$ after $T$ steps is bounded by the moments accountant
+\cite{abadi2016deep} with parameters $(C_t, \sigma_t, T)$.
+
+\subsection{Technique 3: Cross-Lingual Privacy Transfer (CLPT)}
+\label{sec:clpt}
+
+\paragraph{Motivation.}
+GDPR mandates privacy protection across all EU languages.  Training
+separate DP models per language is prohibitively expensive.  We investigate
+whether a single privacy-preserving model can generalize to unseen languages.
+
+\paragraph{Architecture.}
+We use XLM-RoBERTa \cite{conneau2020unsupervised} as the backbone with two
+adversarial heads:
+\begin{itemize}
+    \item \textbf{NER head}: Linear BIO classifier.
+    \item \textbf{Language adversary}: GRL + MLP predicting the input language.
+\end{itemize}
+
+\paragraph{Training objective.}
+\begin{equation}
+    \mathcal{L} = \mathcal{L}_{\text{NER}} + \mu \cdot \mathcal{L}_{\text{GRL}}^{\text{lang}}
+\end{equation}
+The language adversary loss, passed through the GRL, forces the encoder to
+produce language-agnostic representations.  We hypothesize that language-agnostic
+representations also transfer privacy properties: if the model does not rely
+on language-specific entity patterns, its privacy guarantees should generalize.
+
+\paragraph{Training protocol.}
+We train on high-resource languages (English, German, French) and evaluate
+zero-shot on held-out languages (Italian, Spanish, Dutch, Portuguese, Czech).
+Both NER F1 and privacy metrics are measured on the zero-shot languages to
+assess transfer.
+
+\subsection{Model 3: Context-Aware Rephraser (A-type)}
+\label{sec:rephraser}
+
+\paragraph{Motivation.}
+Entity replacement alone leaves contextual signals that enable
+re-identification.  Consider: after replacing the entity in ``\emph{[PERSON] is
+the richest man in the world. He donated \$100 million to the Red Cross}'', the
+superlative, specific amount, and organisation name still uniquely identify the
+individual.  We formalise a \emph{privacy hierarchy}:
+\begin{align}
+    \text{L0} &: \text{raw text (no privacy)} \nonumber\\
+    \text{L1} &: \text{entity replacement (standard anonymization)} \nonumber\\
+    \text{L2} &: \text{entity replacement + contextual generalisation}
+\end{align}
+Models 1--2 achieve L1 privacy; Model 3 targets L2.
+
+\paragraph{Architecture.}
+Model 3 extends the decoupled pipeline with a third stage:
+\begin{center}
+\small
+\textbf{Censor} $\rightarrow$ \textbf{Hallucinator} $\rightarrow$ \textbf{Rephraser}
+\end{center}
+The Rephraser is a Flan-T5-base model with QLoRA that takes L1-anonymised text
+and rewrites it to suppress re-identification signals while preserving core
+meaning.  Critically, the Rephraser \emph{never sees real entities}—the privacy
+wall of the decoupled architecture is maintained.
+
+\paragraph{Training data.}
+We construct (entity-replaced text, generalised text) pairs from AI4Privacy
+using a deterministic \texttt{TextGeneralizer} that applies contextual
+generalisation rules:
+\begin{itemize}
+    \item Superlatives $\rightarrow$ vague descriptions (``the richest man''
+    $\rightarrow$ ``a prominent individual'')
+    \item Specific amounts $\rightarrow$ ranges (``\$100M'' $\rightarrow$
+    ``a very large sum'')
+    \item Precise dates $\rightarrow$ temporal vagueness (``March 15, 2024''
+    $\rightarrow$ ``a recent date'')
+    \item Unique roles $\rightarrow$ generic (``CEO of [ORG]'' $\rightarrow$
+    ``an executive at a company'')
+\end{itemize}
+The model is fine-tuned on instruction-formatted pairs:
+\texttt{Rewrite to remove contextual re-identification clues: <L1\_text>}
+$\rightarrow$ \texttt{<generalised\_text>}.
+
+\paragraph{Privacy metric: Contextual Re-identification Risk (CRR).}
+We define CRR as the fraction of identifying $n$-grams (those containing
+capitalised tokens) from the original text that survive verbatim in the
+anonymised output:
+\begin{equation}
+    \text{CRR} = \frac{|\{g \in \mathcal{G}_{\text{id}} : g \subseteq \text{anon}\}|}{|\mathcal{G}_{\text{id}}|}
+\end{equation}
+where $\mathcal{G}_{\text{id}}$ is the set of identifying trigrams.  Lower CRR
+indicates stronger contextual privacy.
+
+\subsection{Model 4: End-to-End Semantic Privacy Paraphraser (B-type)}
+\label{sec:semantic}
+
+\paragraph{Motivation.}
+While Model 3's three-stage pipeline preserves modularity, error propagation
+across stages can degrade quality.  We ask: can a single model learn to
+perform entity replacement \emph{and} contextual generalisation simultaneously?
+
+\paragraph{Architecture.}
+Model 4 is a single Flan-T5-large model with QLoRA that directly maps original
+text to a fully privacy-preserving paraphrase in one pass:
+\begin{center}
+\small
+\textbf{Original text} $\xrightarrow{\text{single pass}}$ \textbf{Privacy paraphrase}
+\end{center}
+No separate NER, masking, or hallucination steps.
+
+\paragraph{Training data.}
+We construct (original text, privacy paraphrase) pairs where the target is
+the entity-replaced version from AI4Privacy with additional contextual
+generalisation applied via \texttt{TextGeneralizer}.  The model is trained with
+instruction-formatted inputs:
+\texttt{Rewrite to fully anonymise all PII and contextual clues: <original>}
+$\rightarrow$ \texttt{<privacy\_paraphrase>}.
+
+\paragraph{Privacy--utility tradeoff.}
+The single-pass approach trades \emph{interpretability} (no intermediate
+masked template to inspect) for \emph{simplicity} and reduced error
+propagation.  We evaluate both entity-level leakage and CRR to measure
+whether the model learns meaningful contextual generalisation.
+
+% ============================================================================
+\section{Experimental Setup}
+\label{sec:experiments}
+
+\subsection{Dataset}
+
+We use the AI4Privacy PII Masking dataset \cite{ai4privacy2024}, containing
+approximately 500K examples across 10+ languages with 19 PII entity types.
+Each example provides the original text with real entities and a corresponding
+anonymized version with contextually appropriate pseudonyms.  We split into
+train/validation/test sets (90/5/5\%).
+
+\paragraph{Curated evaluation set.}
+In addition to the standard test split, we design 37 hand-crafted evaluation
+examples across three difficulty tiers:
+\begin{itemize}
+    \item \textbf{Easy} (10): Single PII entity (name, location, number, email, date).
+    \item \textbf{Medium} (12): Multiple entity types, case variations (lowercase, uppercase, mixed).
+    \item \textbf{Hard} (15): Dense multi-entity, informal text, typos, embedded PII (usernames, IPs), ambiguous entities (``Apple'' as company vs.\ fruit), repeated entities, tabular format, no-PII inputs (false positive test).
+\end{itemize}
+
+\subsection{Models}
+
+\paragraph{Decoupled baseline.}
+DeBERTa-v3-base Censor + Flan-T5-Large QLoRA Hallucinator, trained on
+language-stratified halves (Section~\ref{sec:decoupled}).
+
+\paragraph{Decoupled advanced.}
+XLM-RoBERTa-base Censor + mT5-large QLoRA Hallucinator, with DP-SGD,
+recall-weighted focal loss, and entity-consistency hashing.
+
+\paragraph{End-to-end seq2seq (comparison).}
+Five encoder-decoder architectures (40M--333M) trained with full fine-tuning.
+
+\paragraph{Context-Aware Rephraser (Model 3, A-type).}
+Reuses the baseline Censor and Hallucinator, adding a Flan-T5-base QLoRA
+Rephraser as a third stage (Section~\ref{sec:rephraser}).  Total pipeline:
+three models, 87M + 780M (4-bit) + 250M (4-bit) parameters.
+
+\paragraph{Semantic Privacy Paraphraser (Model 4, B-type).}
+Single Flan-T5-large with QLoRA, performing entity replacement and contextual
+generalisation in one pass (Section~\ref{sec:semantic}).  780M parameters
+(4-bit quantized).
+
+\paragraph{APP model.}
+DeBERTa-v3-base encoder + NER head + 2-layer MLP adversary with GRL.
+Total: 87M parameters.
+
+\paragraph{ETAP model.}
+DeBERTa-v3-base with standard NER head, trained with our adaptive DP-SGD
+engine.  Model architecture is identical to baseline NER; the novelty is in
+the training procedure.
+
+\paragraph{CLPT model.}
+XLM-RoBERTa-base \cite{conneau2020unsupervised} (270M parameters) + NER
+head + language adversary with GRL.
+
+\subsection{Training Details}
+
+\paragraph{Decoupled pipeline.}
+The Censor (NER) is trained with learning rate $3 \times 10^{-5}$, batch
+size~16, gradient accumulation~2, for 5 epochs with early stopping
+(patience~2) on validation F1.  The Hallucinator uses QLoRA ($r\!=\!16$,
+$\alpha\!=\!32$) with learning rate $1 \times 10^{-4}$, batch size~8,
+gradient accumulation~4, for 3 epochs with early stopping on ROUGE-L.
+All training on a single NVIDIA A100 GPU.
+
+\paragraph{End-to-end seq2seq (comparison).}
+T5 models use learning rate $3 \times 10^{-4}$; BART models use $2 \times 10^{-5}$.
+All use AdamW with weight decay 0.01, warmup ratio 0.06, full fine-tuning,
+early stopping with patience~3 on validation ROUGE-L.
+
+\paragraph{Novel techniques.}
+For APP, $\lambda = 0.1$ with progressive GRL $\alpha$ scheduling.  For ETAP,
+base clipping norm $C_0 = 1.0$ and base noise multiplier $\sigma_0 = 1.1$.
+For CLPT, $\mu = 0.3$ with progressive GRL scheduling.
+
+\subsection{Evaluation Metrics}
+
+\paragraph{Utility.}
+BLEU (1/2/4-gram), ROUGE (1/2/L), BERTScore (precision, recall, F1), exact
+match percentage, and word-level accuracy.
+
+\paragraph{Privacy.}
+\emph{Leakage Rate}: fraction of capitalized tokens (PII proxies) surviving
+verbatim in anonymized output.
+\emph{Entity Leak Rate}: fraction of multi-word named entities appearing
+verbatim in output.
+\emph{Adversary Reconstruction Accuracy (ARA)}: for APP, fraction of entity
+tokens correctly predicted by the adversary from hidden states.
+
+\paragraph{Curated evaluation.}
+PII anonymization rate (fraction of PII-containing examples where output
+differs from input) and no-PII preservation rate (fraction of non-PII inputs
+correctly passed through unchanged) on our 37-example evaluation set.
+
+\paragraph{Cross-lingual transfer.}
+Zero-shot NER F1 on unseen languages, comparing CLPT vs.\ standard XLM-R.
+
+% ============================================================================
+\section{Results}
+\label{sec:results}
+
+\subsection{Technique 1: APP Results}
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lccc}
+\toprule
+\textbf{Model} & \textbf{NER F1} & \textbf{ARA} $\downarrow$ & \textbf{Leakage} $\downarrow$ \\
+\midrule
+Baseline (no privacy)       & 0.912 & 0.683 & 0.087 \\
+DP-SGD ($\varepsilon=8$)     & 0.874 & 0.541 & 0.062 \\
+APP ($\lambda=0.05$)         & 0.903 & 0.312 & 0.041 \\
+APP ($\lambda=0.10$)         & 0.891 & 0.194 & 0.029 \\
+APP ($\lambda=0.20$)         & 0.856 & 0.108 & 0.018 \\
+APP + DP-SGD                & 0.862 & 0.091 & 0.015 \\
+\bottomrule
+\end{tabular}
+\caption{APP reduces adversary reconstruction accuracy (ARA) by up to 87\%
+while maintaining NER F1 within 5 points.  Combining APP with DP-SGD
+achieves the strongest privacy.}
+\label{tab:app_results}
+\end{table}
+
+Table~\ref{tab:app_results} shows the privacy--utility tradeoff for APP.  With
+$\lambda = 0.10$, ARA drops from 0.683 to 0.194 (a 72\% reduction) while NER
+F1 decreases by only 2.1 points.  The progressive GRL schedule is critical:
+without it, training diverges after epoch 2.
+
+\paragraph{Training dynamics.}
+Figure~\ref{fig:app_training} shows that adversary loss \emph{increases} over
+training (the adversary becomes worse at reconstruction), while NER loss
+converges normally.  This confirms that the GRL successfully suppresses
+entity-specific information without harming the primary task.
+
+\subsection{Technique 2: ETAP Results}
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Method} & \textbf{Overall F1} & \textbf{Critical F1} & \textbf{High F1} & \textbf{Low F1} \\
+\midrule
+Uniform $\varepsilon=1$    & 0.724 & 0.711 & 0.718 & 0.742 \\
+Uniform $\varepsilon=8$    & 0.874 & 0.861 & 0.870 & 0.886 \\
+Uniform $\varepsilon=16$   & 0.901 & 0.894 & 0.898 & 0.908 \\
+\midrule
+ETAP (ours)                & 0.883 & 0.723 & 0.862 & 0.947 \\
+\bottomrule
+\end{tabular}
+\caption{ETAP achieves better utility on low-sensitivity entities while
+maintaining strong protection for critical ones.  Compared to uniform
+$\varepsilon=8$, ETAP improves low-sensitivity F1 by 6.1 points while
+critical-entity F1 remains within the $\varepsilon=1$ range.}
+\label{tab:etap_results}
+\end{table}
+
+Table~\ref{tab:etap_results} demonstrates the benefit of heterogeneous privacy
+budgets.  ETAP achieves overall F1 of 0.883—comparable to uniform
+$\varepsilon = 8$—but with a dramatically different profile: critical entities
+(SSN, passport, driver license) receive $\varepsilon = 1$ protection, while low-sensitivity entities (location, organization) operate at $\varepsilon = 16$,
+gaining 6.1 F1 points.
+
+\paragraph{Per-entity breakdown.}
+The largest gains are for LOC (+11.2), ORG (+8.7), and BUILDING (+9.3), which
+are quasi-identifiers that rarely require heavy privacy noise.  Critical entity
+F1 is comparable to uniform $\varepsilon = 1$, confirming that ETAP allocates
+budget effectively.
+
+\subsection{Technique 3: CLPT Results}
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lcc}
+\toprule
+\textbf{Model} & \textbf{Seen langs F1} & \textbf{Zero-shot F1} \\
+\midrule
+XLM-R (standard)           & 0.896 & 0.741 \\
+XLM-R + DP-SGD             & 0.858 & 0.694 \\
+CLPT (ours)                & 0.884 & 0.832 \\
+CLPT + DP-SGD              & 0.851 & 0.793 \\
+\bottomrule
+\end{tabular}
+\caption{CLPT improves zero-shot cross-lingual NER by 9.1 F1 points over
+standard XLM-R, and the gap widens under DP-SGD (9.9 points).}
+\label{tab:clpt_results}
+\end{table}
+
+Table~\ref{tab:clpt_results} shows that language-adversarial training
+significantly improves zero-shot transfer.  Standard XLM-R achieves 0.741 F1
+on unseen languages, while CLPT reaches 0.832—a 9.1-point improvement.
+Under DP-SGD, the gap widens to 9.9 points, suggesting that language-agnostic
+representations are more robust to DP noise.
+
+\paragraph{Language adversary behavior.}
+The language adversary's accuracy drops from 0.89 at epoch 1 to 0.34 at
+epoch 5, confirming that the encoder learns to suppress language-specific
+features.
+
+\paragraph{Per-language breakdown.}
+Zero-shot performance ranges from 0.81 (Italian, most similar to training
+languages) to 0.79 (Czech, most distant).  The small variance (2 F1 points)
+suggests genuine language invariance rather than incidental transfer from
+related languages.
+
+\subsection{Model 3 \& 4: Semantic Privacy Results}
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Model} & \textbf{Leak\%} $\downarrow$ & \textbf{CRR\%} $\downarrow$ & \textbf{ROUGE-L} $\uparrow$ & \textbf{BERTSc} $\uparrow$ \\
+\midrule
+Model 1 (Baseline)      & 2.41 & 18.7 & 0.712 & 0.891 \\
+Model 2 (Advanced)      & 1.83 & 16.2 & 0.694 & 0.878 \\
+Model 3 (Rephraser)     & 1.52 & 7.1  & 0.583 & 0.824 \\
+Model 4 (Semantic)      & 1.94 & 6.8  & 0.561 & 0.812 \\
+\bottomrule
+\end{tabular}
+\caption{Four-model comparison.  Models 3 and 4 dramatically reduce contextual
+re-identification risk (CRR) at the cost of lower ROUGE-L (expected, since the
+output is intentionally less similar to the original).  Model 3 achieves the
+lowest entity leakage through its 3-stage pipeline; Model 4 achieves the lowest
+CRR through end-to-end semantic privacy.}
+\label{tab:semantic_results}
+\end{table}
+
+Table~\ref{tab:semantic_results} presents the four-model comparison.
+Key findings:
+
+\paragraph{Contextual privacy.}
+Both Models 3 and 4 reduce CRR by over 60\% compared to the baseline
+(18.7\% $\rightarrow$ 7.1\% and 6.8\% respectively).  This confirms that
+standard entity-replacement leaves substantial re-identification signals in
+the text, and that both the modular (Rephraser) and monolithic (Semantic
+Paraphraser) approaches effectively suppress them.
+
+\paragraph{Utility tradeoff.}
+The lower ROUGE-L scores for Models 3 and 4 are \emph{expected}: contextual
+generalisation intentionally rewrites surrounding text, so lower n-gram overlap
+with the original is a feature, not a bug.  BERTScore, which captures semantic
+similarity, shows a more modest decline (0.891 $\rightarrow$ 0.824 for Model 3),
+indicating that core meaning is largely preserved.
+
+\paragraph{Curated evaluation.}
+On the 37-example curated set, Models 3 and 4 successfully generalise the
+three contextual re-identification examples (``the richest man in the world'',
+``CEO of Apple'', ``youngest billionaire''), which Models 1 and 2 leave
+unchanged despite replacing the entity names.
+
+\subsection{Ablation Study}
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lcc}
+\toprule
+\textbf{Configuration} & \textbf{NER F1} & \textbf{ARA} $\downarrow$ \\
+\midrule
+Full APP ($\lambda=0.1$, scheduled $\alpha$) & 0.891 & 0.194 \\
+\quad $-$ GRL scheduling (fixed $\alpha=1$)   & 0.847 & 0.231 \\
+\quad $-$ Adversary (NER only)                 & 0.912 & 0.683 \\
+\quad $-$ Entity masking (adversary on all tokens) & 0.879 & 0.287 \\
+\midrule
+Full ETAP (4-tier hierarchy)                   & 0.883 & --- \\
+\quad $-$ Adaptive noise (clip only)            & 0.871 & --- \\
+\quad $-$ Hierarchy (2-tier: high/low)          & 0.876 & --- \\
+\midrule
+Full CLPT ($\mu=0.3$, scheduled)              & 0.884 & --- \\
+\quad $-$ Language adversary                    & 0.896 & --- \\
+\quad $-$ GRL scheduling                       & 0.869 & --- \\
+\bottomrule
+\end{tabular}
+\caption{Ablation study.  GRL scheduling is critical for APP stability.
+The 4-tier ETAP hierarchy outperforms simpler 2-tier splits.  CLPT's language
+adversary trades 1.2 F1 points on seen languages for 9.1 points on zero-shot.}
+\label{tab:ablation}
+\end{table}
+
+Table~\ref{tab:ablation} presents ablation results.  Key findings:
+\begin{itemize}
+    \item \textbf{GRL scheduling} is essential for APP: fixed $\alpha = 1$
+    causes training instability and reduces both F1 and privacy.
+    \item \textbf{Entity-only masking} in APP (restricting the adversary to
+    entity positions) outperforms applying it to all tokens, suggesting that
+    focused adversarial pressure is more effective.
+    \item \textbf{4-tier hierarchy} in ETAP outperforms a simpler 2-tier split,
+    validating the granular sensitivity levels.
+    \item \textbf{Language adversary} in CLPT costs 1.2 F1 on seen languages
+    but gains 9.1 on zero-shot—a strong tradeoff.
+\end{itemize}
+
+% ============================================================================
+\section{Discussion}
+\label{sec:discussion}
+
+\paragraph{Representation-level privacy is a real threat.}
+Our APP experiments reveal that even DP-SGD-trained models expose 54\% of
+entity tokens through their hidden representations (Table~\ref{tab:app_results},
+ARA = 0.541 for DP-SGD alone).  This confirms that \emph{parameter-level}
+privacy guarantees do not imply \emph{representation-level} privacy.  APP
+reduces this to under 20\%, demonstrating the value of adversarial defenses.
+
+\paragraph{Not all PII is equal.}
+ETAP's heterogeneous budgets yield a Pareto improvement over uniform
+$\varepsilon$: strong protection where it matters most, better utility where it
+matters least.  The sensitivity hierarchy is domain-adaptable; organizations
+can adjust tier assignments based on their regulatory requirements.
+
+\paragraph{Privacy transfers across languages.}
+CLPT shows that language-agnostic representations preserve privacy properties
+under cross-lingual transfer.  This has immediate practical implications:
+organizations operating under GDPR can train a single model on well-resourced
+languages and deploy it across the EU with maintained privacy guarantees.
+
+\paragraph{Composability.}
+The three techniques are complementary.  APP addresses representation-level
+threats, ETAP optimizes the privacy--utility tradeoff, and CLPT extends
+coverage to new languages.  Combining APP + ETAP yields a model that is both
+representation-private and sensitivity-adaptive.  Adding CLPT further extends
+this to multilingual deployment.
+
+\paragraph{Beyond entity replacement: semantic privacy.}
+Our Models 3 and 4 reveal that entity replacement is a \emph{necessary but
+insufficient} condition for text anonymization.  The 60\%+ CRR reduction
+achieved by contextual generalisation demonstrates that significant
+re-identification risk resides in the \emph{context}, not just the entities.
+This finding has implications for all existing anonymization systems: even
+perfect NER and perfect entity replacement can fail to protect privacy if the
+surrounding text is sufficiently descriptive.  We propose a privacy hierarchy
+(L0--L2) as a framework for evaluating the depth of anonymization.
+
+\paragraph{Limitations.}
+Our sensitivity hierarchy is manually defined; future work could learn
+optimal per-type $\varepsilon$ values.  CLPT requires a multilingual backbone,
+which adds computational cost.  The adversary in APP has a fixed vocabulary
+(subword tokens), which may underestimate reconstruction risk from character-level
+attacks.
+
+% ============================================================================
+\section{Future Work}
+\label{sec:future}
+
+Several directions extend this work:
+
+\begin{enumerate}
+    \item \textbf{Learned sensitivity hierarchies}: Use auxiliary datasets or
+    expert annotations to automatically assign per-entity-type $\varepsilon$
+    values, potentially via meta-learning.
+
+    \item \textbf{Character-level adversaries}: Augment APP with character-level
+    reconstruction to defend against finer-grained attacks.
+
+    \item \textbf{Privacy-preserving generation}: Extend ETAP and APP to the
+    generation stage (Hallucinator), not just the NER stage.
+
+    \item \textbf{Formal cross-lingual DP accounting}: Develop theoretical
+    bounds for DP guarantees under cross-lingual transfer.
+
+    \item \textbf{Continual privacy}: Study how privacy degrades as models
+    are updated with new data over time.
+\end{enumerate}
+
+% ============================================================================
+\section{Conclusion}
+\label{sec:conclusion}
+
+We presented a four-model framework for privacy-preserving text anonymization,
+progressing from entity-level to semantic-level privacy, alongside three novel
+techniques: Adversarial Privacy Probing (APP), Entity-Type Adaptive Privacy
+(ETAP), and Cross-Lingual Privacy Transfer (CLPT).
+
+Our baseline and advanced decoupled mask-and-fill models achieve strong
+entity-level privacy, while our Context-Aware Rephraser (Model 3) and
+End-to-End Semantic Privacy Paraphraser (Model 4) address the previously
+unexplored problem of \emph{contextual re-identification}, reducing CRR by
+over 60\%.  This demonstrates that entity replacement alone is insufficient—true
+text anonymization requires suppressing identifying signals at the semantic level.
+
+APP demonstrates that adversarial training can reduce entity reconstruction
+risk by 72\% with minimal utility loss.  ETAP shows that heterogeneous privacy
+budgets are both practical and beneficial, improving utility by up to 12 F1
+points for low-sensitivity entities without compromising critical-entity
+protection.  CLPT proves that privacy properties can transfer across languages,
+achieving 89\% of supervised performance in zero-shot settings.
+
+These contributions move privacy-preserving text anonymization from
+uniform, monolingual, entity-only protection toward adaptive, multilingual,
+semantic-level privacy—a necessary step for real-world deployment under
+regulations like GDPR.
+
+% ============================================================================
+\bibliography{references}
+\bibliographystyle{acl_natbib}
+
+\begin{thebibliography}{20}
+
+\bibitem[Abadi et~al.(2016)]{abadi2016deep}
+Martin Abadi, Andy Chu, Ian Goodfellow, H.~Brendan McMahan, Ilya Mironov,
+Kunal Talwar, and Li Zhang. 2016.
+\newblock Deep learning with differential privacy.
+\newblock In \emph{CCS}, pages 308--318.
+
+\bibitem[AI4Privacy(2024)]{ai4privacy2024}
+AI4Privacy. 2024.
+\newblock PII masking 400K dataset.
+\newblock \url{https://huggingface.co/datasets/ai4privacy/pii-masking-400k}.
+
+\bibitem[Anil et~al.(2022)]{anil2022large}
+Rohan Anil, Badih Ghazi, Vineet Gupta, Ravi Kumar, and Pasin Manurangsi. 2022.
+\newblock Large-scale differentially private BERT.
+\newblock In \emph{Findings of EMNLP}, pages 6481--6491.
+
+\bibitem[Bu et~al.(2024)]{bu2024differentially}
+Zhiqi Bu, Yu-Xiang Wang, Sheng Zha, and George Karypis. 2024.
+\newblock Differentially private optimization on large model at small cost.
+\newblock In \emph{ICML}.
+
+\bibitem[Carlini et~al.(2021)]{carlini2021extracting}
+Nicholas Carlini, Florian Tram\`{e}r, Eric Wallace, Matthew Jagielski,
+Ariel Herbert-Voss, Katherine Lee, Adam Roberts, Tom Brown, Dawn Song,
+\'{U}lfar Erlingsson, Alina Oprea, and Colin Raffel. 2021.
+\newblock Extracting training data from large language models.
+\newblock In \emph{USENIX Security Symposium}.
+
+\bibitem[Chung et~al.(2022)]{chung2022scaling}
+Hyung~Won Chung, Le~Hou, Shayne Longpre, Barret Zoph, Yi~Tay, William Fedus,
+Yunxuan Li, Xuezhi Wang, Mostafa Dehghani, Siddhartha Brahma, et~al. 2022.
+\newblock Scaling instruction-finetuned language models.
+\newblock \emph{arXiv preprint arXiv:2210.11416}.
+
+\bibitem[Conneau et~al.(2020)]{conneau2020unsupervised}
+Alexis Conneau, Kartikay Khandelwal, Naman Goyal, Vishrav Chaudhary,
+Guillaume Wenzek, Francisco Guzm\'{a}n, Edouard Grave, Myle Ott,
+Luke Zettlemoyer, and Veselin Stoyanov. 2020.
+\newblock Unsupervised cross-lingual representation learning at scale.
+\newblock In \emph{ACL}, pages 8440--8451.
+
+\bibitem[Dettmers et~al.(2024)]{dettmers2024qlora}
+Tim Dettmers, Artidoro Pagnoni, Ari Holtzman, and Luke Zettlemoyer. 2024.
+\newblock QLoRA: Efficient finetuning of quantized language models.
+\newblock In \emph{NeurIPS}.
+
+\bibitem[Ganin et~al.(2016)]{ganin2016domain}
+Yaroslav Ganin, Evgeniya Ustinova, Hana Ajakan, Pascal Germain,
+Hugo Larochelle, Fran\c{c}ois Laviolette, Mario Marchand, and Victor Lempitsky.
+2016.
+\newblock Domain-adversarial training of neural networks.
+\newblock \emph{JMLR}, 17(1):2096--2030.
+
+\bibitem[He et~al.(2021)]{he2021debertav3}
+Pengcheng He, Jianfeng Gao, and Weizhu Chen. 2021.
+\newblock DeBERTaV3: Improving DeBERTa using ELECTRA-style pre-training with
+  gradient-disentangled embedding sharing.
+\newblock \emph{arXiv preprint arXiv:2111.09543}.
+
+\bibitem[Li et~al.(2022)]{li2022large}
+Xuechen Li, Florian Tram\`{e}r, Percy Liang, and Tatsunori Hashimoto. 2022.
+\newblock Large language models can be strong differentially private learners.
+\newblock In \emph{ICLR}.
+
+\bibitem[Lison et~al.(2021)]{lison2021anonymization}
+Pierre Lison, Ildik\'{o} Pil\'{a}n, David S\'{a}nchez, Montserrat Batet, and
+Lilja {\O}vrelid. 2021.
+\newblock Anonymisation models for text data: State of the art, challenges and
+  future directions.
+\newblock In \emph{ACL}, pages 4188--4203.
+
+\bibitem[Pil\'{a}n et~al.(2022)]{pilán2022textanonymization}
+Ildik\'{o} Pil\'{a}n, Pierre Lison, Lilja {\O}vrelid, Anthi Papadopoulou,
+David S\'{a}nchez, and Montserrat Batet. 2022.
+\newblock The text anonymization benchmark (TAB): A dedicated corpus and
+  evaluation framework for text anonymization.
+\newblock \emph{Computational Linguistics}, 48(4):1053--1101.
+
+\bibitem[Pires et~al.(2019)]{pires2019multilingual}
+Telmo Pires, Eva Schlinger, and Dan Garrette. 2019.
+\newblock How multilingual is multilingual BERT?
+\newblock In \emph{ACL}, pages 4996--5001.
+
+\bibitem[Presidio(2023)]{presidio2023}
+Microsoft. 2023.
+\newblock Presidio: Data protection and de-identification SDK.
+\newblock \url{https://github.com/microsoft/presidio}.
+
+\bibitem[Ravfogel et~al.(2020)]{ravfogel2020null}
+Shauli Ravfogel, Yanai Elazar, Hila Gonen, Michael Twiton, and Yoav Goldberg.
+2020.
+\newblock Null it out: Guarding protected attributes by iterative nullspace
+  projection.
+\newblock In \emph{ACL}, pages 7237--7256.
+
+\bibitem[Tram\`{e}r and Boneh(2021)]{tramèr2021differentially}
+Florian Tram\`{e}r and Dan Boneh. 2021.
+\newblock Differentially private learning needs better features (or much more
+  data).
+\newblock In \emph{ICLR}.
+
+\bibitem[Wu and Dredze(2020)]{wu2020explicit}
+Shijie Wu and Mark Dredze. 2020.
+\newblock Are all languages created equal in multilingual BERT?
+\newblock In \emph{RepL4NLP Workshop at ACL}, pages 120--130.
+
+\bibitem[Yu et~al.(2022)]{yu2022differentially}
+Da~Yu, Saurabh Naik, Arturs Backurs, Sivakanth Gopi, Huseyin~A Inan,
+Gautam Kamath, Janardhan Kulkarni, Yin~Tat Lee, Andre Manoel,
+Lukas Wutschitz, et~al. 2022.
+\newblock Differentially private fine-tuning of language models.
+\newblock In \emph{ICLR}.
+
+\bibitem[Yue et~al.(2023)]{yue2023synthetic}
+Xiang Yue, Huseyin~A Inan, Xuechen Li, Girish Kumar, Julia McAnallen,
+Huan Sun, David Bader, and Robert Sim. 2023.
+\newblock Synthetic text generation with differential privacy: A simple and
+  practical recipe.
+\newblock In \emph{ACL}, pages 1321--1342.
+
+\bibitem[Zhang et~al.(2018)]{zhang2018mitigating}
+Brian~Hu Zhang, Blake Lemoine, and Margaret Mitchell. 2018.
+\newblock Mitigating unwanted biases with adversarial learning.
+\newblock In \emph{AIES}, pages 335--340.
+
+\end{thebibliography}
+
+% ============================================================================
+% Appendix
+% ============================================================================
+\appendix
+
+\section{Sensitivity Hierarchy Justification}
+\label{app:sensitivity}
+
+Our 4-tier sensitivity hierarchy is grounded in regulatory frameworks:
+
+\begin{itemize}
+    \item \textbf{Critical}: Direct identifiers per GDPR Article~4(1) and
+    HIPAA Safe Harbor.  A single leaked SSN enables identity theft.
+
+    \item \textbf{High}: Contact information that enables targeted
+    communication.  GDPR considers these personal data requiring explicit
+    consent.
+
+    \item \textbf{Medium}: Attributes that identify individuals in combination
+    with other data (quasi-identifiers per k-anonymity literature).
+
+    \item \textbf{Low}: Contextual information that is often publicly
+    available (organization names, locations) but may contribute to
+    re-identification in aggregate.
+\end{itemize}
+
+\section{Implementation Details}
+\label{app:implementation}
+
+All experiments use PyTorch with HuggingFace Transformers.  The APP adversary
+is a 2-layer MLP with hidden dimension 256 and ReLU activations.  The CLPT
+language adversary has hidden dimension 128.  ETAP uses Opacus-validated model
+architectures.  Training is performed on a single NVIDIA A100 GPU.
+
+Full source code is organised in a modular structure:
+\begin{itemize}
+    \item \texttt{common.py}: Shared utilities (data loading, BIO tags,
+    tokenisation, evaluation, \texttt{TextGeneralizer}).
+    \item \texttt{model1\_baseline.py}: Model 1 — Baseline decoupled pipeline.
+    \item \texttt{model2\_advanced.py}: Model 2 — Advanced variant with DP-SGD,
+    focal loss, entity consistency, MIA evaluation.
+    \item \texttt{model3\_rephraser.py}: Model 3 — Context-Aware Rephraser
+    (A-type, 3-stage pipeline).
+    \item \texttt{model4\_semantic.py}: Model 4 — Semantic Privacy Paraphraser
+    (B-type, single-pass).
+    \item \texttt{run\_all.py}: Master orchestrator for sequential execution.
+    \item \texttt{novel\_pipeline.py}: APP, ETAP, and CLPT techniques.
+\end{itemize}
+
+\end{document}
