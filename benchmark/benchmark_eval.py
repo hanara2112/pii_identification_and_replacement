@@ -124,8 +124,10 @@ def main():
     total_entity_count = 0
 
     for g, p in zip(gold_records, predictions):
-        if g.get("id") != p.get("id"):
-            raise ValueError(f"ID mismatch: {g.get('id')} vs {p.get('id')}")
+        gold_id = g.get("id", g.get("entry_id"))
+        pred_id = p.get("id")
+        if gold_id != pred_id:
+            raise ValueError(f"ID mismatch: {gold_id} vs {pred_id}")
 
         for ent in g.get("entities", []):
             total_entity_count += 1
@@ -134,7 +136,11 @@ def main():
 
     if total_entity_count > 0 and unknown_entity_count > 0:
         pct = (unknown_entity_count / total_entity_count) * 100
-        print(f"[NOTE] {pct:.1f}% of entities in evaluation are typed as UNKNOWN.")
+        print(
+            f"[NOTE] {pct:.1f}% of entities in gold ({args.gold}) have type UNKNOWN. "
+            "ELR/CRR/BERTScore still use entity text and full documents; only per-type "
+            "breakdowns (--print-types) need real types in the gold file."
+        )
 
     print(f"Evaluating {len(predictions)} records...")
 
