@@ -99,7 +99,21 @@ def calculate_bertscore(gold_records, predictions, model_type="distilbert-base-u
         
     refs = [g.get("original_text", "") for g in gold_records]
     cands = [normalize_prediction_text(p.get("anonymized_text", "")) for p in predictions]
-    
+
+    paired = [(c, r) for c, r in zip(cands, refs) if (r or "").strip()]
+    skipped = len(refs) - len(paired)
+    if skipped:
+        print(
+            f"[NOTE] Skipped {skipped} record(s) with empty gold original_text for BERTScore "
+            "(bert_score would otherwise force those rows to 0 and print a warning)."
+        )
+    if not paired:
+        print("[NOTE] No non-empty references left; BERTScore skipped.")
+        return None
+
+    cands, refs = zip(*paired)
+    cands, refs = list(cands), list(refs)
+
     P, R, F1 = score(cands, refs, lang="en", verbose=False, model_type=model_type)
     return F1.mean().item() * 100
 
