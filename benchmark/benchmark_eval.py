@@ -63,6 +63,27 @@ def crr3(gold_records, predictions):
     crr = survived / total if total > 0 else 0.0
     return crr * 100
 
+def _patch_bert_score_sent_encode_for_new_transformers():
+    """
+    bert_score.utils.sent_encode calls tokenizer.build_inputs_with_special_tokens([])
+    for empty strings; recent transformers versions removed that public API.
+    Patch only the empty-string path so encode() is used instead.
+    """
+    import bert_score.utils as bs_utils
+
+    if getattr(bs_utils, "_sent_encode_orig", None) is None:
+        bs_utils._sent_encode_orig = bs_utils.sent_encode
+
+        def sent_encode(tokenizer, sent):
+            if not sent.strip() and not hasattr(
+                tokenizer, "build_inputs_with_special_tokens"
+            ):
+                return tokenizer.encode("", add_special_tokens=True)
+            return bs_utils._sent_encode_orig(tokenizer, sent)
+
+        bs_utils.sent_encode = sent_encode
+
+
 def calculate_bertscore(gold_records, predictions, model_type="distilbert-base-uncased"):
     """
     BERTScore F1 computes the semantic similarity of the texts.
@@ -70,6 +91,8 @@ def calculate_bertscore(gold_records, predictions, model_type="distilbert-base-u
     """
     try:
         from bert_score import score
+
+        _patch_bert_score_sent_encode_for_new_transformers()
     except ImportError:
         print("`bert_score` not installed. Skipping. Install with: pip install bert_score")
         return None
