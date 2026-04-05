@@ -134,9 +134,9 @@ def format_input(record):
     for ent in sorted(safe_entities, key=lambda x: x["start"], reverse=True):
         formatted = (
             formatted[: ent["start"]]
-            + f"<{ent['type']}>"
+            + f"<{ent['type']}> "
             + ent["text"]
-            + f"</{ent['type']}>"
+            + f" </{ent['type']}>"
             + formatted[ent["end"] :]
         )
 

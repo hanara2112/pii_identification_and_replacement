@@ -75,7 +75,7 @@ def calculate_bertscore(gold_records, predictions, model_type="distilbert-base-u
         return None
         
     refs = [g.get("original_text", "") for g in gold_records]
-    cands = [p.get("anonymized_text", "") for p in predictions]
+    cands = [normalize_prediction_text(p.get("anonymized_text", "")) for p in predictions]
     
     P, R, F1 = score(cands, refs, lang="en", verbose=False, model_type=model_type)
     return F1.mean().item() * 100

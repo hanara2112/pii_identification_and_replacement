@@ -79,16 +79,23 @@ def prepare_dataset(input_file="anonymized_dataset_final.jsonl", output_dir="dat
 
             if span is None:
                 span_warning_count += 1
-                continue
-
-            start, end = span
-            occupied_spans.append((start, end))
-            entities.append({
-                "text": text,
-                "type": ent_type,
-                "start": start,
-                "end": end,
-            })
+                # Keep invalid entity instead of dropping it, to preserve entity counts.
+                entities.append({
+                    "text": text,
+                    "type": ent_type,
+                    "start": -1,
+                    "end": -1,
+                    "invalid": True,
+                })
+            else:
+                start, end = span
+                occupied_spans.append((start, end))
+                entities.append({
+                    "text": text,
+                    "type": ent_type,
+                    "start": start,
+                    "end": end,
+                })
 
         formatted_record = {
             "id": new_id,
@@ -106,7 +113,7 @@ def prepare_dataset(input_file="anonymized_dataset_final.jsonl", output_dir="dat
     if type_warning_count > 0:
         print(f"[WARNING] {type_warning_count} entities normalized to UNKNOWN type")
     if span_warning_count > 0:
-        print(f"[WARNING] {span_warning_count} entities could not be aligned with safe spans and were dropped")
+        print(f"[WARNING] {span_warning_count} entities could not be aligned with safe spans and were marked invalid")
 
     print(f"\nSplitting dataset via index cutoff (GOLD_CUTOFF = {GOLD_CUTOFF})...")
     gold_entries = all_entries[:GOLD_CUTOFF]
