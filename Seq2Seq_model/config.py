@@ -12,7 +12,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(BASE_DIR)
 DATASET_PATH = os.path.join(PROJECT_DIR, "data_creation", "output", "anonymized_dataset_final.jsonl")
 DATA_SPLITS_DIR = os.path.join(BASE_DIR, "data_splits")
-CHECKPOINTS_DIR = os.path.join(BASE_DIR, "checkpoints")
+CHECKPOINTS_DIR = os.path.join(BASE_DIR, "checkpoints2")
 LOGS_DIR = os.path.join(BASE_DIR, "logs")
 
 # ============================================================

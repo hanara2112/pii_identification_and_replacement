@@ -61,8 +61,8 @@ from utils import (
 # ============================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 EVAL_EXAMPLES_FILE = os.path.join(BASE_DIR, "eval_examples.jsonl")
-RESULTS_JSON = os.path.join(BASE_DIR, "evaluation_results.json")
-RESULTS_TXT = os.path.join(BASE_DIR, "evaluation_results_readable.txt")
+RESULTS_JSON = os.path.join(BASE_DIR, "evaluation_results2.json")
+RESULTS_TXT = os.path.join(BASE_DIR, "evaluation_results_readable2.txt")
 
 EVAL_BATCH_SIZE = 16
 NUM_WORKERS = 2

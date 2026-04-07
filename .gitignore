@@ -35,10 +35,13 @@ data/
 # Models cache
 .cache/
 models/
+*.pt
 
 /data_creation
 
 /Seq2Seq_model/checkpoints
+/Seq2Seq_model/checkpoints2
 /Seq2Seq_model/data_splits
 /Seq2Seq_model/logs
 
+/report
