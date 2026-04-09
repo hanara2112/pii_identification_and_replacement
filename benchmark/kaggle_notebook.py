@@ -4,7 +4,7 @@ SAHA-AL Benchmark — Full Evaluation (GPU)
 Plain terminal script. No notebook abstractions.
 
 Prerequisites (auto-installed by step 0):
-  pip install transformers==4.46.3 sentence-transformers==3.3.1 autoawq
+  pip install transformers==4.46.3 sentence-transformers==3.3.1
   pip install faker bert_score spacy presidio-analyzer presidio-anonymizer bitsandbytes accelerate
   python -m spacy download en_core_web_lg
 
@@ -12,10 +12,10 @@ Run from benchmark/ directory:
   cd pii_identification_and_replacement/benchmark
   python kaggle_notebook.py
 
-Model selection (edit LLM_MODEL below):
-  Single A10 (24GB):  Qwen/Qwen2.5-32B-Instruct-AWQ   (~18GB VRAM)
-  2x A10 / A100 40GB: Qwen/Qwen2.5-72B-Instruct-AWQ   (~40GB VRAM)
-  H100 (80GB):        Qwen/Qwen2.5-72B-Instruct-AWQ   (~40GB VRAM)
+Model selection (edit LLM_MODEL below, all use bitsandbytes 4-bit):
+  Single A10 (24GB):  Qwen/Qwen2.5-14B-Instruct   (~8GB VRAM, default)
+  2x A10 / A100 40GB: Qwen/Qwen2.5-32B-Instruct   (~18GB VRAM)
+  H100 (80GB):        Qwen/Qwen2.5-72B-Instruct   (~40GB VRAM)
 
 Total runtime: ~40-60 min on A10, ~25-40 min on H100.
 """
@@ -25,7 +25,7 @@ import os, sys, json, shutil, time
 # ┌──────────────────────────────────────────────────────────────────────┐
 # │  CONFIG — edit these                                                │
 # └──────────────────────────────────────────────────────────────────────┘
-LLM_MODEL   = "Qwen/Qwen2.5-32B-Instruct-AWQ"  # ~18GB VRAM (fits A10 24GB)
+LLM_MODEL   = "Qwen/Qwen2.5-14B-Instruct"  # ~8GB VRAM at 4-bit (fits A10 24GB easily)
 LLM_SAMPLE  = 1000     # records for LLM zero-shot baseline
 LRR_SAMPLE  = 300      # records per system for LRR attack
 ERA_SAMPLE  = 500      # records for ERA retrieval attack
@@ -82,8 +82,9 @@ def patch_bert(json_path, key):
 # ╚══════════════════════════════════════════════════════════════════════╝
 section(0, "DEPS + ENVIRONMENT CHECK")
 
+run("pip uninstall -y tensorflow keras autoawq 2>/dev/null || true")
 run("pip install -q --upgrade Pillow")
-run("pip install -q 'transformers==4.46.3' 'sentence-transformers==3.3.1' autoawq")
+run("pip install -q 'transformers==4.46.3' 'sentence-transformers==3.3.1'")
 run("pip install -q faker bert_score spacy "
     "presidio-analyzer presidio-anonymizer bitsandbytes accelerate")
 run("python -m spacy download en_core_web_lg -q 2>/dev/null || true")
@@ -255,7 +256,7 @@ pareto_map = {
     "t5-eff-tiny": "Results/eval_anon_t5-efficient-tiny-pii.json",
 }
 if os.path.exists("Results/eval_anon_llm.json"):
-    pareto_map[f"Qwen-32B"] = "Results/eval_anon_llm.json"
+    pareto_map["Qwen-14B"] = "Results/eval_anon_llm.json"
 
 all_eval = {}
 for name, path in pareto_map.items():
@@ -294,7 +295,7 @@ t2_systems = [
     ("T5-small",       "eval_anon_t5-small-pii"),
     ("DistilBART",     "eval_anon_distilbart-pii"),
     ("T5-eff-tiny",    "eval_anon_t5-efficient-tiny-pii"),
-    ("Qwen-32B (LLM)", "eval_anon_llm"),
+    ("Qwen-14B (LLM)", "eval_anon_llm"),
     ("spaCy+Faker",    "eval_anon_spacy"),
     ("Presidio",       "eval_anon_presidio"),
     ("Regex+Faker",    "eval_anon_regex"),
@@ -378,7 +379,7 @@ print(f"""
      BART: ~0.93% ELR / 92.74 BERT vs Presidio: ~33.77% / 90.04.
 
   2. ERA (retrieval) > LRR (generative LLM attack).
-     Embedding retrieval recovers more entities than a 32B LLM can guess.
+     Embedding retrieval recovers more entities than a 14B LLM can guess.
 
   3. Rule-based systems are ~10x more vulnerable to privacy attacks.
      Presidio ERA@1 ~ 20% vs BART ERA@1 ~ 2%.

@@ -116,9 +116,8 @@ def main():
     parser.add_argument("--output", required=True, help="Output predictions JSONL")
     parser.add_argument("--model", default="gpt-4o-mini", help="API model name")
     parser.add_argument("--local", action="store_true", help="Use local HuggingFace model")
-    parser.add_argument("--local-model", default="Qwen/Qwen2.5-72B-Instruct-AWQ",
-                        help="HuggingFace model ID for local inference "
-                             "(use AWQ/GPTQ variants to avoid downloading full FP16 weights)")
+    parser.add_argument("--local-model", default="Qwen/Qwen2.5-14B-Instruct",
+                        help="HuggingFace model ID for local inference")
     parser.add_argument("--sample", type=int, default=None,
                         help="Only process first N records (for cost/time control)")
     parser.add_argument("--delay", type=float, default=0,

@@ -357,9 +357,8 @@ def main():
     parser.add_argument("--lrr-sample", type=int, default=300)
     parser.add_argument("--lrr-local", action="store_true",
                         help="Use a local HuggingFace model instead of OpenAI API")
-    parser.add_argument("--lrr-model", type=str, default="Qwen/Qwen2.5-72B-Instruct-AWQ",
-                        help="Local model name (default: Qwen/Qwen2.5-72B-Instruct-AWQ; "
-                             "use AWQ/GPTQ variants to avoid downloading full FP16 weights)")
+    parser.add_argument("--lrr-model", type=str, default="Qwen/Qwen2.5-14B-Instruct",
+                        help="Local model name (default: Qwen/Qwen2.5-14B-Instruct)")
     parser.add_argument("--lrr-api-model", type=str, default="gpt-4o-mini",
                         help="API model name for OpenAI-compatible endpoints "
                              "(e.g., llama-3.3-70b-versatile for Groq)")
