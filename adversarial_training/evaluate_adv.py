@@ -263,7 +263,12 @@ def eval_normal(model, tokenizer, device) -> dict:
     logger.info("PART A: Normal anonymization quality (val set)")
     logger.info("=" * 60)
 
-    val_data = load_jsonl(NORMAL_VAL)
+    val_data = load_jsonl(ADV_EVAL_FILE)
+    # remap inverter_eval.jsonl fields to NormalDataset schema
+    for row in val_data:
+        row["original_text"]  = row["original"]
+        row["anonymized_text"] = row["anonymized"]
+        row["entity_texts"]   = [row["probe_entity"]] if row.get("probe_entity") else []
     val_ds   = NormalDataset(val_data, tokenizer, MAX_INPUT_LENGTH, MAX_TARGET_LENGTH)
 
     def _normal_collate(batch):

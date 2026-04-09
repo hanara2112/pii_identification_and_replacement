@@ -266,7 +266,7 @@ def compute_bleu(preds: list[str], targets: list[str]) -> dict:
     import sacrebleu
     
     if not preds or not targets:
-        return {"bleu": 0.0, "bleu1": 0.0, "bleu2": 0.0, "bleu4": 0.0}
+        return {"bleu": 0.0, "bleu_1": 0.0, "bleu_2": 0.0, "bleu_4": 0.0}
     
     try:
         # sacrebleu expects: hypotheses as list[str], references as list[list[str]]
@@ -275,14 +275,14 @@ def compute_bleu(preds: list[str], targets: list[str]) -> dict:
         
         # bleu.precisions = [unigram%, bigram%, trigram%, 4gram%]
         return {
-            "bleu": round(bleu.score, 2),
-            "bleu1": round(bleu.precisions[0], 2),
-            "bleu2": round(bleu.precisions[1], 2),
-            "bleu4": round(bleu.precisions[3], 2),
+            "bleu":   round(bleu.score, 2),
+            "bleu_1": round(bleu.precisions[0], 2),
+            "bleu_2": round(bleu.precisions[1], 2),
+            "bleu_4": round(bleu.precisions[3], 2),
         }
     except Exception as e:
         print(f"  [WARN] BLEU computation failed: {e}")
-        return {"bleu": 0.0, "bleu1": 0.0, "bleu2": 0.0, "bleu4": 0.0}
+        return {"bleu": 0.0, "bleu_1": 0.0, "bleu_2": 0.0, "bleu_4": 0.0}
 
 
 def compute_rouge(preds: list[str], targets: list[str]) -> dict:
@@ -300,7 +300,7 @@ def compute_rouge(preds: list[str], targets: list[str]) -> dict:
     from rouge_score import rouge_scorer
     
     if not preds or not targets:
-        return {"rouge1": 0.0, "rouge2": 0.0, "rougeL": 0.0}
+        return {"rouge_1": 0.0, "rouge_2": 0.0, "rouge_l": 0.0}
     
     try:
         scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
@@ -313,13 +313,13 @@ def compute_rouge(preds: list[str], targets: list[str]) -> dict:
             rl_scores.append(scores['rougeL'].fmeasure)
         
         return {
-            "rouge1": round(np.mean(r1_scores) * 100, 2),
-            "rouge2": round(np.mean(r2_scores) * 100, 2),
-            "rougeL": round(np.mean(rl_scores) * 100, 2),
+            "rouge_1": round(np.mean(r1_scores) * 100, 2),
+            "rouge_2": round(np.mean(r2_scores) * 100, 2),
+            "rouge_l": round(np.mean(rl_scores) * 100, 2),
         }
     except Exception as e:
         print(f"  [WARN] ROUGE computation failed: {e}")
-        return {"rouge1": 0.0, "rouge2": 0.0, "rougeL": 0.0}
+        return {"rouge_1": 0.0, "rouge_2": 0.0, "rouge_l": 0.0}
 
 
 def compute_bertscore(preds: list[str], targets: list[str]) -> dict:
@@ -344,7 +344,7 @@ def compute_bertscore(preds: list[str], targets: list[str]) -> dict:
         from bert_score import score as bert_score_fn
         
         if not preds or not targets:
-            return {"bertscore_p": 0.0, "bertscore_r": 0.0, "bertscore_f1": 0.0}
+            return {"bertscore_precision": 0.0, "bertscore_recall": 0.0, "bertscore_f1": 0.0}
         
         # Use distilbert to save memory (model is ~260MB vs ~440MB for bert-base)
         P, R, F1 = bert_score_fn(
@@ -357,13 +357,13 @@ def compute_bertscore(preds: list[str], targets: list[str]) -> dict:
         )
         
         return {
-            "bertscore_p": round(P.mean().item() * 100, 2),
-            "bertscore_r": round(R.mean().item() * 100, 2),
-            "bertscore_f1": round(F1.mean().item() * 100, 2),
+            "bertscore_precision": round(P.mean().item() * 100, 2),
+            "bertscore_recall":    round(R.mean().item() * 100, 2),
+            "bertscore_f1":        round(F1.mean().item() * 100, 2),
         }
     except Exception as e:
         print(f"  [WARN] BERTScore computation failed: {e}")
-        return {"bertscore_p": 0.0, "bertscore_r": 0.0, "bertscore_f1": 0.0}
+        return {"bertscore_precision": 0.0, "bertscore_recall": 0.0, "bertscore_f1": 0.0}
 
 
 def compute_entity_leakage(
