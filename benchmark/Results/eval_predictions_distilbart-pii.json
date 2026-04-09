@@ -1,0 +1,18 @@
+{
+  "gold": "data/test.jsonl",
+  "predictions": "predictions_distilbart-pii.jsonl",
+  "records": 3600,
+  "elr": 1.23,
+  "leaked": 114,
+  "total_entities": 9271,
+  "crr_3": 34.69,
+  "bert_f1": 86.34,
+  "bert_model": "distilbert-base-uncased",
+  "entity_types": {
+    "UNKNOWN": {
+      "count": 9271,
+      "leaked": 114,
+      "elr": 1.23
+    }
+  }
+}

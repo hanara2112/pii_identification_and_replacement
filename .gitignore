@@ -32,9 +32,22 @@ data/
 *.csv
 *.json
 
+# Allow benchmark data, predictions, and results through
+!benchmark/data/
+!benchmark/data/**
+!benchmark/predictions/
+!benchmark/predictions/**
+!benchmark/Results/
+!benchmark/Results/**
+!benchmark/results/
+!benchmark/results/**
+
 # Models cache
 .cache/
 models/
+
+# OS files
+.DS_Store
 
 /data_creation
 

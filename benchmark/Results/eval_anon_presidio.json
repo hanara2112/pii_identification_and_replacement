@@ -1,0 +1,40 @@
+{
+  "elr": 33.77,
+  "token_recall": 68.18,
+  "over_masking_rate": 1.18,
+  "format_preservation_rate": 12.37,
+  "bertscore_f1": 90.04,
+  "nli_consistency": null,
+  "elr_detail": {
+    "elr": 33.77,
+    "leaked": 3131,
+    "total_entities": 9271,
+    "per_type": {
+      "FULLNAME": 4177,
+      "TIME": 337,
+      "LOCATION": 753,
+      "UNKNOWN": 1081,
+      "EMAIL": 373,
+      "ORGANIZATION": 1062,
+      "DATE": 599,
+      "ID_NUMBER": 81,
+      "PHONE": 714,
+      "ZIPCODE": 47,
+      "ADDRESS": 1,
+      "CREDIT_CARD": 33,
+      "SSN": 13
+    },
+    "leaked_per_type": {
+      "FULLNAME": 1286,
+      "UNKNOWN": 712,
+      "ORGANIZATION": 727,
+      "TIME": 86,
+      "PHONE": 164,
+      "LOCATION": 99,
+      "DATE": 36,
+      "ADDRESS": 1,
+      "ZIPCODE": 19,
+      "SSN": 1
+    }
+  }
+}

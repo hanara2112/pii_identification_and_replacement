@@ -1,0 +1,75 @@
+{
+  "train": {
+    "split": "train",
+    "records": 113133,
+    "total_entities": 286542,
+    "avg_text_length_words": 17.0,
+    "avg_entities_per_record": 2.53,
+    "pii_density": 0.149,
+    "type_distribution": {
+      "FULLNAME": 164338,
+      "UNKNOWN": 55110,
+      "PHONE": 21687,
+      "EMAIL": 12615,
+      "ADDRESS": 11396,
+      "FIRST_NAME": 7980,
+      "DATE": 7908,
+      "ID_NUMBER": 2080,
+      "ZIPCODE": 1493,
+      "CREDIT_CARD": 1446,
+      "SSN": 439,
+      "ORGANIZATION": 50
+    },
+    "unique_entity_strings": 183720
+  },
+  "validation": {
+    "split": "validation",
+    "records": 3600,
+    "total_entities": 9211,
+    "avg_text_length_words": 17.0,
+    "avg_entities_per_record": 2.56,
+    "pii_density": 0.1501,
+    "type_distribution": {
+      "FULLNAME": 5326,
+      "UNKNOWN": 1778,
+      "PHONE": 718,
+      "ADDRESS": 389,
+      "EMAIL": 366,
+      "DATE": 246,
+      "FIRST_NAME": 231,
+      "ID_NUMBER": 58,
+      "ZIPCODE": 43,
+      "CREDIT_CARD": 42,
+      "SSN": 14
+    },
+    "unique_entity_strings": 8276
+  },
+  "test": {
+    "split": "test",
+    "records": 3600,
+    "total_entities": 9271,
+    "avg_text_length_words": 17.0,
+    "avg_entities_per_record": 2.58,
+    "pii_density": 0.1519,
+    "type_distribution": {
+      "FULLNAME": 5332,
+      "UNKNOWN": 1813,
+      "PHONE": 714,
+      "EMAIL": 373,
+      "ADDRESS": 366,
+      "DATE": 270,
+      "FIRST_NAME": 228,
+      "ID_NUMBER": 81,
+      "ZIPCODE": 47,
+      "CREDIT_CARD": 33,
+      "SSN": 13,
+      "ORGANIZATION": 1
+    },
+    "unique_entity_strings": 8344
+  },
+  "train_test_entity_overlap": {
+    "overlapping_strings": 3661,
+    "test_unique_strings": 8344,
+    "overlap_ratio": 43.88
+  }
+}
