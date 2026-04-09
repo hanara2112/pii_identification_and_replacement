@@ -80,7 +80,9 @@ def anonymize_with_local_llm(text, model, tokenizer, max_new_tokens=256):
     return result
 
 
-def anonymize_with_api(text, client, model="gpt-4o-mini", max_retries=3):
+def anonymize_with_api(text, client, model="gpt-4o-mini", max_retries=3, delay=0):
+    if delay > 0:
+        time.sleep(delay)
     for attempt in range(max_retries):
         try:
             response = client.chat.completions.create(
@@ -91,8 +93,9 @@ def anonymize_with_api(text, client, model="gpt-4o-mini", max_retries=3):
             )
             return response.choices[0].message.content.strip()
         except Exception as e:
+            wait = max(2 ** (attempt + 1), delay or 2)
             if attempt < max_retries - 1:
-                time.sleep(2 ** attempt)
+                time.sleep(wait)
             else:
                 print(f"  [WARN] Failed after {max_retries} retries: {e}")
                 return text
@@ -108,6 +111,8 @@ def main():
                         help="HuggingFace model ID for local inference")
     parser.add_argument("--sample", type=int, default=None,
                         help="Only process first N records (for cost/time control)")
+    parser.add_argument("--delay", type=float, default=0,
+                        help="Seconds to wait between API calls (for rate limiting)")
     args = parser.parse_args()
 
     records = load_jsonl(args.gold)
@@ -132,7 +137,7 @@ def main():
         if args.local:
             anon = anonymize_with_local_llm(text, local_model, local_tokenizer)
         else:
-            anon = anonymize_with_api(text, client, model=args.model)
+            anon = anonymize_with_api(text, client, model=args.model, delay=args.delay)
         predictions.append({"id": rec["id"], "anonymized_text": anon})
 
         if (i + 1) % 100 == 0:
