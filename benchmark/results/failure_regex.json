@@ -1,0 +1,242 @@
+{
+  "counts": {
+    "clean": 327,
+    "boundary": 28,
+    "type_confusion": 0,
+    "ghost_leak": 1182,
+    "over_mask": 0,
+    "format_break": 3,
+    "full_leak": 7731
+  },
+  "examples": {
+    "clean": [],
+    "boundary": [
+      {
+        "id": "sample_46408",
+        "entity": "07/10/1971",
+        "type": "DATE",
+        "leaked_tokens": [
+          "1971"
+        ]
+      },
+      {
+        "id": "sample_93803",
+        "entity": "0044 082 738.6800",
+        "type": "DATE",
+        "leaked_tokens": [
+          "6800"
+        ]
+      },
+      {
+        "id": "sample_123898",
+        "entity": "Hanur Ward 14",
+        "type": "FULLNAME",
+        "leaked_tokens": [
+          "Hanur",
+          "Ward"
+        ]
+      },
+      {
+        "id": "sample_110597",
+        "entity": "0110 766-763.1423",
+        "type": "UNKNOWN",
+        "leaked_tokens": [
+          "1423"
+        ]
+      },
+      {
+        "id": "sample_45472",
+        "entity": "0031.830.907.2527",
+        "type": "UNKNOWN",
+        "leaked_tokens": [
+          "2527"
+        ]
+      },
+      {
+        "id": "sample_85468",
+        "entity": "01124 680-326.6495",
+        "type": "UNKNOWN",
+        "leaked_tokens": [
+          "6495"
+        ]
+      },
+      {
+        "id": "sample_94788",
+        "entity": "0107-664 787.6244",
+        "type": "UNKNOWN",
+        "leaked_tokens": [
+          "6244"
+        ]
+      },
+      {
+        "id": "sample_23894",
+        "entity": "0044.033.553.3195",
+        "type": "UNKNOWN",
+        "leaked_tokens": [
+          "3195"
+        ]
+      },
+      {
+        "id": "sample_82621",
+        "entity": "00693.922 931-3473",
+        "type": "UNKNOWN",
+        "leaked_tokens": [
+          "3473"
+        ]
+      },
+      {
+        "id": "sample_114129",
+        "entity": "0130.344.164.8668",
+        "type": "UNKNOWN",
+        "leaked_tokens": [
+          "8668"
+        ]
+      }
+    ],
+    "type_confusion": [],
+    "ghost_leak": [
+      {
+        "id": "sample_86516",
+        "entity": "ACW@yahoo.com",
+        "type": "EMAIL",
+        "shared_context": [
+          "is",
+          "on",
+          "sent",
+          "outstanding",
+          "teamwork"
+        ]
+      },
+      {
+        "id": "sample_103351",
+        "entity": "RG@gmail.com",
+        "type": "EMAIL",
+        "shared_context": [
+          "erial",
+          "send",
+          "you",
+          "i",
+          "ll"
+        ]
+      },
+      {
+        "id": "sample_23206",
+        "entity": "FD0618402",
+        "type": "ID_NUMBER",
+        "shared_context": [
+          "attached",
+          "form",
+          "t",
+          "your",
+          "including"
+        ]
+      },
+      {
+        "id": "sample_83956",
+        "entity": "24/03/2001",
+        "type": "DATE",
+        "shared_context": [
+          "a",
+          "on",
+          "road",
+          "meeting",
+          "at"
+        ]
+      },
+      {
+        "id": "sample_85679",
+        "entity": "+1-694-496-3500",
+        "type": "PHONE",
+        "shared_context": [
+          "are",
+          "el",
+          "04",
+          "you",
+          "pm"
+        ]
+      },
+      {
+        "id": "sample_100467",
+        "entity": "164301752",
+        "type": "PHONE",
+        "shared_context": [
+          "or",
+          "ovklp8wh1gtq0",
+          "please",
+          "of",
+          "our"
+        ]
+      },
+      {
+        "id": "sample_67948",
+        "entity": "tal-a@hotmail.com",
+        "type": "EMAIL",
+        "shared_context": [
+          "or",
+          "rare",
+          "and",
+          "purchase",
+          "at"
+        ]
+      },
+      {
+        "id": "sample_87293",
+        "entity": "+585 01.139-1554",
+        "type": "PHONE",
+        "shared_context": [
+          "confirmation",
+          "community",
+          "energy",
+          "for",
+          "of"
+        ]
+      },
+      {
+        "id": "sample_134116",
+        "entity": "12/08/1969",
+        "type": "DATE",
+        "shared_context": [
+          "on",
+          "responsible",
+          "v\u00edt",
+          "water",
+          "ine"
+        ]
+      },
+      {
+        "id": "sample_91031",
+        "entity": "9217362673",
+        "type": "PHONE",
+        "shared_context": [
+          "with",
+          "a",
+          "issue",
+          "ew",
+          "player"
+        ]
+      }
+    ],
+    "over_mask": [],
+    "format_break": [
+      {
+        "id": "sample_19645",
+        "entity": "376630308",
+        "type": "PHONE",
+        "replacement": "0480 and 001-717-639-3638x5467"
+      },
+      {
+        "id": "sample_101168",
+        "entity": "+17.012-259 5916",
+        "type": "PHONE",
+        "replacement": "."
+      },
+      {
+        "id": "sample_101168",
+        "entity": "SNA@gmail.com",
+        "type": "EMAIL",
+        "replacement": "."
+      }
+    ],
+    "full_leak": []
+  }
+}

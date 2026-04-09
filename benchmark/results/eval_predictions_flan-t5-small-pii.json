@@ -1,0 +1,18 @@
+{
+  "gold": "data/test.jsonl",
+  "predictions": "predictions_flan-t5-small-pii.jsonl",
+  "records": 3600,
+  "elr": 0.99,
+  "leaked": 92,
+  "total_entities": 9271,
+  "crr_3": 34.94,
+  "bert_f1": 92.47,
+  "bert_model": "distilbert-base-uncased",
+  "entity_types": {
+    "UNKNOWN": {
+      "count": 9271,
+      "leaked": 92,
+      "elr": 0.99
+    }
+  }
+}

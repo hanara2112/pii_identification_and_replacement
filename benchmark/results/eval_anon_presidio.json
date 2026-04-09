@@ -1,13 +1,13 @@
 {
-  "elr": 1.54,
-  "token_recall": 94.15,
-  "over_masking_rate": 0.19,
-  "format_preservation_rate": 0.28,
-  "bertscore_f1": 92.59,
+  "elr": 33.77,
+  "token_recall": 68.18,
+  "over_masking_rate": 1.18,
+  "format_preservation_rate": 12.37,
+  "bertscore_f1": 90.04,
   "nli_consistency": null,
   "elr_detail": {
-    "elr": 1.54,
-    "leaked": 143,
+    "elr": 33.77,
+    "leaked": 3131,
     "total_entities": 9271,
     "per_type": {
       "FULLNAME": 4177,
@@ -25,12 +25,16 @@
       "SSN": 13
     },
     "leaked_per_type": {
-      "FULLNAME": 73,
-      "UNKNOWN": 52,
-      "TIME": 3,
-      "LOCATION": 9,
-      "DATE": 1,
-      "ORGANIZATION": 5
+      "FULLNAME": 1286,
+      "UNKNOWN": 712,
+      "ORGANIZATION": 727,
+      "TIME": 86,
+      "PHONE": 164,
+      "LOCATION": 99,
+      "DATE": 36,
+      "ADDRESS": 1,
+      "ZIPCODE": 19,
+      "SSN": 1
     }
   }
 }

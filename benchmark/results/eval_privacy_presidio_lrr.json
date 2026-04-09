@@ -1,0 +1,13 @@
+{
+  "crr3": 50.33,
+  "era": null,
+  "lrr": {
+    "lrr_exact": 2.12,
+    "lrr_fuzzy": 3.45,
+    "total_evaluated": 753,
+    "sample_n": 300,
+    "model": "Qwen/Qwen2.5-14B-Instruct",
+    "api_failures": 0
+  },
+  "uac": 1.78
+}

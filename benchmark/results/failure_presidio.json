@@ -1,0 +1,283 @@
+{
+  "counts": {
+    "clean": 2615,
+    "boundary": 191,
+    "type_confusion": 0,
+    "ghost_leak": 2340,
+    "over_mask": 0,
+    "format_break": 994,
+    "full_leak": 3131
+  },
+  "examples": {
+    "clean": [],
+    "boundary": [
+      {
+        "id": "sample_86516",
+        "entity": "Azaria Machi",
+        "type": "LOCATION",
+        "leaked_tokens": [
+          "Azaria"
+        ]
+      },
+      {
+        "id": "sample_104171",
+        "entity": "1951-04-07T00:00:00",
+        "type": "DATE",
+        "leaked_tokens": [
+          "07T00"
+        ]
+      },
+      {
+        "id": "sample_93803",
+        "entity": "0044 082 738.6800",
+        "type": "DATE",
+        "leaked_tokens": [
+          "6800"
+        ]
+      },
+      {
+        "id": "sample_109293",
+        "entity": "Burton upon Trent",
+        "type": "FULLNAME",
+        "leaked_tokens": [
+          "upon"
+        ]
+      },
+      {
+        "id": "sample_24142",
+        "entity": "+7046016 2366",
+        "type": "PHONE",
+        "leaked_tokens": [
+          "2366"
+        ]
+      },
+      {
+        "id": "sample_48195",
+        "entity": "Diss Wortham",
+        "type": "FULLNAME",
+        "leaked_tokens": [
+          "Diss"
+        ]
+      },
+      {
+        "id": "sample_123886",
+        "entity": "0055.51904-2939",
+        "type": "UNKNOWN",
+        "leaked_tokens": [
+          "0055"
+        ]
+      },
+      {
+        "id": "sample_59480",
+        "entity": "BARAK-081191-BA-343",
+        "type": "FULLNAME",
+        "leaked_tokens": [
+          "BARAK"
+        ]
+      },
+      {
+        "id": "sample_32150",
+        "entity": "0099.88 276 5308",
+        "type": "UNKNOWN",
+        "leaked_tokens": [
+          "0099"
+        ]
+      },
+      {
+        "id": "sample_64739",
+        "entity": "003465134 3812",
+        "type": "PHONE",
+        "leaked_tokens": [
+          "3812"
+        ]
+      }
+    ],
+    "type_confusion": [],
+    "ghost_leak": [
+      {
+        "id": "sample_131675",
+        "entity": "3 o'clock",
+        "type": "TIME",
+        "shared_context": [
+          "a",
+          "for",
+          "visa",
+          "t",
+          "have"
+        ]
+      },
+      {
+        "id": "sample_131675",
+        "entity": "Corve View",
+        "type": "LOCATION",
+        "shared_context": [
+          "issues",
+          "crossing",
+          "t",
+          "at",
+          "want"
+        ]
+      },
+      {
+        "id": "sample_86516",
+        "entity": "ACW@yahoo.com",
+        "type": "EMAIL",
+        "shared_context": [
+          "for",
+          "employee",
+          "is",
+          "unique",
+          "id"
+        ]
+      },
+      {
+        "id": "sample_23465",
+        "entity": "Lakeside Parkway",
+        "type": "LOCATION",
+        "shared_context": [
+          "for",
+          "miribe",
+          "supplies",
+          "from",
+          "to"
+        ]
+      },
+      {
+        "id": "sample_116875",
+        "entity": "Oph\u00e9lia",
+        "type": "LOCATION",
+        "shared_context": [
+          "a",
+          "for",
+          "fastest",
+          "new",
+          "set"
+        ]
+      },
+      {
+        "id": "sample_116875",
+        "entity": "13:00",
+        "type": "TIME",
+        "shared_context": [
+          "a",
+          "of",
+          "dribbling",
+          "time",
+          "with"
+        ]
+      },
+      {
+        "id": "sample_97036",
+        "entity": "g\u00f6rszek@yahoo.com",
+        "type": "UNKNOWN",
+        "shared_context": [
+          "of",
+          "binary",
+          "on",
+          "r",
+          "blog"
+        ]
+      },
+      {
+        "id": "sample_103351",
+        "entity": "Diellon",
+        "type": "FULLNAME",
+        "shared_context": [
+          "use",
+          "for",
+          "i",
+          "a",
+          "should"
+        ]
+      },
+      {
+        "id": "sample_103351",
+        "entity": "RG@gmail.com",
+        "type": "EMAIL",
+        "shared_context": [
+          "for",
+          "i",
+          "options",
+          "some",
+          "send"
+        ]
+      },
+      {
+        "id": "sample_92380",
+        "entity": "Rizlane Dameli",
+        "type": "FULLNAME",
+        "shared_context": [
+          "a",
+          "for",
+          "to",
+          "thanks",
+          "send"
+        ]
+      }
+    ],
+    "over_mask": [],
+    "format_break": [
+      {
+        "id": "sample_17035",
+        "entity": "96362-93741",
+        "type": "DATE",
+        "replacement": "<DATE_TIME>"
+      },
+      {
+        "id": "sample_138062",
+        "entity": "November 20th, 1969",
+        "type": "DATE",
+        "replacement": "<DATE_TIME>"
+      },
+      {
+        "id": "sample_138062",
+        "entity": "1315",
+        "type": "DATE",
+        "replacement": "<DATE_TIME>"
+      },
+      {
+        "id": "sample_83956",
+        "entity": "24/03/2001",
+        "type": "DATE",
+        "replacement": "<DATE_TIME>"
+      },
+      {
+        "id": "sample_46408",
+        "entity": "07/10/1971",
+        "type": "DATE",
+        "replacement": "<DATE_TIME>"
+      },
+      {
+        "id": "sample_100467",
+        "entity": "164301752",
+        "type": "PHONE",
+        "replacement": "<DATE_TIME>"
+      },
+      {
+        "id": "sample_67948",
+        "entity": "tal-a@hotmail.com",
+        "type": "EMAIL",
+        "replacement": "<EMAIL_ADDRESS>"
+      },
+      {
+        "id": "sample_87293",
+        "entity": "+585 01.139-1554",
+        "type": "PHONE",
+        "replacement": "<PHONE_NUMBER>"
+      },
+      {
+        "id": "sample_134116",
+        "entity": "12/08/1969",
+        "type": "DATE",
+        "replacement": "<DATE_TIME>"
+      },
+      {
+        "id": "sample_91031",
+        "entity": "9217362673",
+        "type": "PHONE",
+        "replacement": "<PHONE_NUMBER>"
+      }
+    ],
+    "full_leak": []
+  }
+}

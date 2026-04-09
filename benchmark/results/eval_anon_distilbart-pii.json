@@ -1,13 +1,13 @@
 {
-  "elr": 1.54,
-  "token_recall": 94.15,
-  "over_masking_rate": 0.19,
-  "format_preservation_rate": 0.28,
-  "bertscore_f1": 92.59,
+  "elr": 1.23,
+  "token_recall": 94.41,
+  "over_masking_rate": 0.15,
+  "format_preservation_rate": 1.85,
+  "bertscore_f1": 86.34,
   "nli_consistency": null,
   "elr_detail": {
-    "elr": 1.54,
-    "leaked": 143,
+    "elr": 1.23,
+    "leaked": 114,
     "total_entities": 9271,
     "per_type": {
       "FULLNAME": 4177,
@@ -25,11 +25,11 @@
       "SSN": 13
     },
     "leaked_per_type": {
-      "FULLNAME": 73,
-      "UNKNOWN": 52,
-      "TIME": 3,
-      "LOCATION": 9,
+      "UNKNOWN": 30,
+      "FULLNAME": 64,
+      "TIME": 1,
       "DATE": 1,
+      "LOCATION": 13,
       "ORGANIZATION": 5
     }
   }

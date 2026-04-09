@@ -1,0 +1,282 @@
+{
+  "counts": {
+    "clean": 5700,
+    "boundary": 101,
+    "type_confusion": 0,
+    "ghost_leak": 3374,
+    "over_mask": 0,
+    "format_break": 10,
+    "full_leak": 86
+  },
+  "examples": {
+    "clean": [],
+    "boundary": [
+      {
+        "id": "sample_30726",
+        "entity": "15th November 1948",
+        "type": "DATE",
+        "leaked_tokens": [
+          "15th"
+        ]
+      },
+      {
+        "id": "sample_45225",
+        "entity": "Hockett Country Lane",
+        "type": "ORGANIZATION",
+        "leaked_tokens": [
+          "Lane"
+        ]
+      },
+      {
+        "id": "sample_28340",
+        "entity": "Jennett Tree Lane",
+        "type": "FULLNAME",
+        "leaked_tokens": [
+          "Lane"
+        ]
+      },
+      {
+        "id": "sample_76273",
+        "entity": "7 o'clock",
+        "type": "TIME",
+        "leaked_tokens": [
+          "clock"
+        ]
+      },
+      {
+        "id": "sample_16516",
+        "entity": "Leeming Lane",
+        "type": "FULLNAME",
+        "leaked_tokens": [
+          "Lane"
+        ]
+      },
+      {
+        "id": "sample_129249",
+        "entity": "XINRA 870086 X9 510",
+        "type": "ORGANIZATION",
+        "leaked_tokens": [
+          "XINRA"
+        ]
+      },
+      {
+        "id": "sample_138695",
+        "entity": "Moss Side Lane",
+        "type": "FULLNAME",
+        "leaked_tokens": [
+          "Lane"
+        ]
+      },
+      {
+        "id": "sample_47756",
+        "entity": "26/01/2005",
+        "type": "DATE",
+        "leaked_tokens": [
+          "2005"
+        ]
+      },
+      {
+        "id": "sample_14691",
+        "entity": "Bou Chakra",
+        "type": "FULLNAME",
+        "leaked_tokens": [
+          "Chakra"
+        ]
+      },
+      {
+        "id": "sample_07968",
+        "entity": "17/10/2024",
+        "type": "DATE",
+        "leaked_tokens": [
+          "2024"
+        ]
+      }
+    ],
+    "type_confusion": [],
+    "ghost_leak": [
+      {
+        "id": "sample_43677",
+        "entity": "Sllamniku Rasridee Caliolo",
+        "type": "FULLNAME",
+        "shared_context": [
+          "use",
+          "signature",
+          "confidential",
+          "destroy",
+          "after"
+        ]
+      },
+      {
+        "id": "sample_131675",
+        "entity": "3 o'clock",
+        "type": "TIME",
+        "shared_context": [
+          "you",
+          "have",
+          "we",
+          "applied",
+          "a"
+        ]
+      },
+      {
+        "id": "sample_86516",
+        "entity": "Azaria Machi",
+        "type": "LOCATION",
+        "shared_context": [
+          "outstanding",
+          "peer",
+          "memo",
+          "recognition",
+          "your"
+        ]
+      },
+      {
+        "id": "sample_86516",
+        "entity": "ACW@yahoo.com",
+        "type": "EMAIL",
+        "shared_context": [
+          "is",
+          "been",
+          "outstanding",
+          "teamwork",
+          "memo"
+        ]
+      },
+      {
+        "id": "sample_121420",
+        "entity": "October/91",
+        "type": "FULLNAME",
+        "shared_context": [
+          "the",
+          "wh",
+          "have",
+          "we",
+          "talked"
+        ]
+      },
+      {
+        "id": "sample_116875",
+        "entity": "Oph\u00e9lia",
+        "type": "LOCATION",
+        "shared_context": [
+          "sprint",
+          "the",
+          "personal",
+          "fastest",
+          "a"
+        ]
+      },
+      {
+        "id": "sample_116875",
+        "entity": "13:00",
+        "type": "TIME",
+        "shared_context": [
+          "time",
+          "of",
+          "while",
+          "basketball",
+          "score"
+        ]
+      },
+      {
+        "id": "sample_97036",
+        "entity": "Madame",
+        "type": "ORGANIZATION",
+        "shared_context": [
+          "been",
+          "the",
+          "documenting",
+          "their",
+          "experience"
+        ]
+      },
+      {
+        "id": "sample_72169",
+        "entity": "Yane",
+        "type": "FULLNAME",
+        "shared_context": [
+          "certification",
+          "training",
+          "for",
+          "spacewalk"
+        ]
+      },
+      {
+        "id": "sample_103351",
+        "entity": "Diellon",
+        "type": "FULLNAME",
+        "shared_context": [
+          "use",
+          "should",
+          "i",
+          "fireproof",
+          "we"
+        ]
+      }
+    ],
+    "over_mask": [],
+    "format_break": [
+      {
+        "id": "sample_72480",
+        "entity": "089 8921.2729",
+        "type": "PHONE",
+        "replacement": "er discussion."
+      },
+      {
+        "id": "sample_93074",
+        "entity": "002 213.352.2254",
+        "type": "PHONE",
+        "replacement": "67"
+      },
+      {
+        "id": "sample_131240",
+        "entity": "5199",
+        "type": "DATE",
+        "replacement": "Heigh"
+      },
+      {
+        "id": "sample_57565",
+        "entity": "1876",
+        "type": "DATE",
+        "replacement": "Heigh"
+      },
+      {
+        "id": "sample_83823",
+        "entity": "+84.62 399 7586",
+        "type": "PHONE",
+        "replacement": "'"
+      },
+      {
+        "id": "sample_92185",
+        "entity": "6304",
+        "type": "DATE",
+        "replacement": "rt"
+      },
+      {
+        "id": "sample_12324",
+        "entity": "6137",
+        "type": "DATE",
+        "replacement": "schools"
+      },
+      {
+        "id": "sample_107291",
+        "entity": "32719",
+        "type": "ZIPCODE",
+        "replacement": "5"
+      },
+      {
+        "id": "sample_100009",
+        "entity": "42FH@tutanota.com",
+        "type": "EMAIL",
+        "replacement": "mail.com "
+      },
+      {
+        "id": "sample_124296",
+        "entity": "1404",
+        "type": "DATE",
+        "replacement": "iv"
+      }
+    ],
+    "full_leak": []
+  }
+}

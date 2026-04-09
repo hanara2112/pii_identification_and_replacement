@@ -1,0 +1,93 @@
+{
+  "exact": {
+    "precision": 92.32,
+    "recall": 15.04,
+    "f1": 25.86,
+    "tp": 1394,
+    "fp": 116,
+    "fn": 7877
+  },
+  "partial": {
+    "precision": 99.93,
+    "recall": 16.28,
+    "f1": 27.99,
+    "tp": 1509,
+    "fp": 1,
+    "fn": 7762
+  },
+  "type_aware": {
+    "precision": 87.09,
+    "recall": 14.18,
+    "f1": 24.39,
+    "tp": 1315,
+    "fp": 195,
+    "fn": 7956
+  },
+  "per_type_recall": {
+    "ADDRESS": {
+      "recall": 0.0,
+      "tp": 0,
+      "total": 1
+    },
+    "CREDIT_CARD": {
+      "recall": 100.0,
+      "tp": 33,
+      "total": 33
+    },
+    "DATE": {
+      "recall": 31.72,
+      "tp": 190,
+      "total": 599
+    },
+    "EMAIL": {
+      "recall": 100.0,
+      "tp": 373,
+      "total": 373
+    },
+    "FULLNAME": {
+      "recall": 0.0,
+      "tp": 0,
+      "total": 4177
+    },
+    "ID_NUMBER": {
+      "recall": 100.0,
+      "tp": 81,
+      "total": 81
+    },
+    "LOCATION": {
+      "recall": 0.0,
+      "tp": 0,
+      "total": 753
+    },
+    "ORGANIZATION": {
+      "recall": 0.0,
+      "tp": 0,
+      "total": 1062
+    },
+    "PHONE": {
+      "recall": 95.1,
+      "tp": 679,
+      "total": 714
+    },
+    "SSN": {
+      "recall": 100.0,
+      "tp": 13,
+      "total": 13
+    },
+    "TIME": {
+      "recall": 0.3,
+      "tp": 1,
+      "total": 337
+    },
+    "UNKNOWN": {
+      "recall": 2.22,
+      "tp": 24,
+      "total": 1081
+    },
+    "ZIPCODE": {
+      "recall": 0.0,
+      "tp": 0,
+      "total": 47
+    }
+  }
+}

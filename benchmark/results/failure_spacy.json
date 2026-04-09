@@ -1,0 +1,284 @@
+{
+  "counts": {
+    "clean": 3892,
+    "boundary": 165,
+    "type_confusion": 0,
+    "ghost_leak": 2728,
+    "over_mask": 0,
+    "format_break": 35,
+    "full_leak": 2451
+  },
+  "examples": {
+    "clean": [],
+    "boundary": [
+      {
+        "id": "sample_86516",
+        "entity": "Azaria Machi",
+        "type": "LOCATION",
+        "leaked_tokens": [
+          "Azaria"
+        ]
+      },
+      {
+        "id": "sample_104171",
+        "entity": "1951-04-07T00:00:00",
+        "type": "DATE",
+        "leaked_tokens": [
+          "07T00"
+        ]
+      },
+      {
+        "id": "sample_93803",
+        "entity": "0044 082 738.6800",
+        "type": "DATE",
+        "leaked_tokens": [
+          "6800"
+        ]
+      },
+      {
+        "id": "sample_109293",
+        "entity": "Burton upon Trent",
+        "type": "FULLNAME",
+        "leaked_tokens": [
+          "upon"
+        ]
+      },
+      {
+        "id": "sample_48195",
+        "entity": "Diss Wortham",
+        "type": "FULLNAME",
+        "leaked_tokens": [
+          "Diss"
+        ]
+      },
+      {
+        "id": "sample_38307",
+        "entity": "East Camp Wisdom Road",
+        "type": "ORGANIZATION",
+        "leaked_tokens": [
+          "East"
+        ]
+      },
+      {
+        "id": "sample_07031",
+        "entity": "North Baltimore",
+        "type": "LOCATION",
+        "leaked_tokens": [
+          "North"
+        ]
+      },
+      {
+        "id": "sample_64739",
+        "entity": "003465134 3812",
+        "type": "PHONE",
+        "leaked_tokens": [
+          "3812"
+        ]
+      },
+      {
+        "id": "sample_06897",
+        "entity": "Spencer Green Pasture Progressive",
+        "type": "FULLNAME",
+        "leaked_tokens": [
+          "Pasture",
+          "Progressive"
+        ]
+      },
+      {
+        "id": "sample_129249",
+        "entity": "XINRA 870086 X9 510",
+        "type": "ORGANIZATION",
+        "leaked_tokens": [
+          "870086"
+        ]
+      }
+    ],
+    "type_confusion": [],
+    "ghost_leak": [
+      {
+        "id": "sample_131675",
+        "entity": "Corve View",
+        "type": "LOCATION",
+        "shared_context": [
+          "crossing",
+          "issues",
+          "any",
+          "at",
+          "don"
+        ]
+      },
+      {
+        "id": "sample_23465",
+        "entity": "Lakeside Parkway",
+        "type": "LOCATION",
+        "shared_context": [
+          "for",
+          "brewing",
+          "miribe",
+          "to",
+          "ge"
+        ]
+      },
+      {
+        "id": "sample_116875",
+        "entity": "Oph\u00e9lia",
+        "type": "LOCATION",
+        "shared_context": [
+          "set",
+          "fastest",
+          "record",
+          "new",
+          "for"
+        ]
+      },
+      {
+        "id": "sample_103351",
+        "entity": "RG@gmail.com",
+        "type": "EMAIL",
+        "shared_context": [
+          "i",
+          "via",
+          "for",
+          "ll",
+          "you"
+        ]
+      },
+      {
+        "id": "sample_92380",
+        "entity": "Rizlane Dameli",
+        "type": "FULLNAME",
+        "shared_context": [
+          "need",
+          "responding",
+          "confirmation",
+          "thanks",
+          "for"
+        ]
+      },
+      {
+        "id": "sample_92380",
+        "entity": "Palda Garh Mirkpur Road",
+        "type": "FULLNAME",
+        "shared_context": [
+          "need",
+          "confirmation",
+          "your",
+          "please",
+          "is"
+        ]
+      },
+      {
+        "id": "sample_126878",
+        "entity": "Sinaver Tomislava",
+        "type": "FULLNAME",
+        "shared_context": [
+          "of",
+          "local",
+          "on",
+          "s",
+          "economy"
+        ]
+      },
+      {
+        "id": "sample_94398",
+        "entity": "Matar",
+        "type": "FULLNAME",
+        "shared_context": [
+          "eline",
+          "admitted",
+          "f",
+          "is",
+          "you"
+        ]
+      },
+      {
+        "id": "sample_17035",
+        "entity": "96362-93741",
+        "type": "DATE",
+        "shared_context": [
+          "purposes",
+          "tax",
+          "reminding",
+          "09",
+          "submit"
+        ]
+      },
+      {
+        "id": "sample_13513",
+        "entity": "New Castle",
+        "type": "LOCATION",
+        "shared_context": [
+          "meeting",
+          "public",
+          "library",
+          "held",
+          "please"
+        ]
+      }
+    ],
+    "over_mask": [],
+    "format_break": [
+      {
+        "id": "sample_36095",
+        "entity": "17090",
+        "type": "ZIPCODE",
+        "replacement": "[FAC]"
+      },
+      {
+        "id": "sample_16516",
+        "entity": "1655",
+        "type": "DATE",
+        "replacement": "[FAC]"
+      },
+      {
+        "id": "sample_68091",
+        "entity": "45873",
+        "type": "ZIPCODE",
+        "replacement": "[FAC]"
+      },
+      {
+        "id": "sample_133033",
+        "entity": "2334403519",
+        "type": "PHONE",
+        "replacement": "ese"
+      },
+      {
+        "id": "sample_48114",
+        "entity": "+7-96.925-4307",
+        "type": "PHONE",
+        "replacement": "[EVENT]"
+      },
+      {
+        "id": "sample_01191",
+        "entity": "P1962@outlook.com",
+        "type": "EMAIL",
+        "replacement": "Brady LLC"
+      },
+      {
+        "id": "sample_119122",
+        "entity": "11843",
+        "type": "ZIPCODE",
+        "replacement": "[FAC]"
+      },
+      {
+        "id": "sample_83519",
+        "entity": "+962.53-077.7119",
+        "type": "PHONE",
+        "replacement": "Barron"
+      },
+      {
+        "id": "sample_67951",
+        "entity": "5530561227",
+        "type": "PHONE",
+        "replacement": "White-Knox"
+      },
+      {
+        "id": "sample_71786",
+        "entity": "9000997368798",
+        "type": "PHONE",
+        "replacement": "Crosby, Coffey and George"
+      }
+    ],
+    "full_leak": []
+  }
+}
