@@ -377,13 +377,13 @@ def write_text_report(results: Dict, output_path: str):
             lines.append("")
 
         # Sample predictions
-        lines.append("  Sample recoveries (anonymized → predicted → reference):")
+        lines.append("  Sample recoveries (original → anonymized → inverted):")
         for s in r.get("samples", [])[:8]:
-            lines.append(f"    ANON  : {s['anonymized'][:70]}")
-            lines.append(f"    PRED  : {s['predicted'][:70]}")
-            lines.append(f"    ORIG  : {s['reference'][:70]}")
-            lines.append(f"    ENTITY: {s['probe_entity']}  "
-                         f"(recovered={'✅' if s['entity_recovered'] else '❌'})")
+            lines.append(f"    ORIGINAL  : {s['reference'][:80]}")
+            lines.append(f"    ANONYMIZED: {s['anonymized'][:80]}")
+            lines.append(f"    INVERTED  : {s['predicted'][:80]}")
+            lines.append(f"    ENTITY    : {s['probe_entity']}  "
+                         f"(recovered={'YES' if s['entity_recovered'] else 'NO'})")
             lines.append("")
 
     # Comparison

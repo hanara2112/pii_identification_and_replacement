@@ -19,12 +19,12 @@
 
   Combo                             Exact    Word%   BLEU-4  ROUGE-L  BERTScore  Mask Rec.      Leak%
   ────────────────────────────────────────────────────────────────────────────────────────
-  distilroberta + bart-base         0.000    2.123    0.000    0.000     88.630      0.777       0.0%
-  distilroberta + deberta-mlm       0.000   32.187    0.000    0.000     93.270      0.777       0.0%
-  roberta + bart-base               0.000    2.302    0.000    0.000     88.520      0.776       0.0%
-  roberta + deberta-mlm             0.000   32.084    0.000    0.000     93.230      0.776       0.0%
-  deberta + bart-base               0.000    1.892    0.000    0.000     88.990      0.716       0.0%
-  deberta + deberta-mlm             0.000   35.879    0.000    0.000     93.520      0.716       0.0%
+  distilroberta + bart-base         0.000    2.123   62.130   78.280     88.630      0.777       0.0%
+  distilroberta + deberta-mlm       0.000   32.187   78.100   90.570     93.270      0.777       0.0%
+  roberta + bart-base               0.000    2.302   62.540   78.210     88.520      0.776       0.0%
+  roberta + deberta-mlm             0.000   32.084   78.410   90.430     93.230      0.776       0.0%
+  deberta + bart-base               0.000    1.892   63.080   78.730     88.990      0.716       0.0%
+  deberta + deberta-mlm             0.000   35.879   79.030   90.650     93.520      0.716       0.0%
 
 ══════════════════════════════════════════════════════════════════════════════════════════
   DETAILED RESULTS PER PIPELINE COMBO
@@ -34,7 +34,7 @@
   Combo  : distilroberta + bart-base
   Masker : DistilRoBERTa-base fine-tuned for PII NER (6-layer)
   Filler : BART-base Seq2Seq filler (encoder-decoder)
-  Runtime: 3m 40s
+  Runtime: 3m 6s
 ──────────────────────────────────────────────────────────────────────────────────────────
 
   ── Masker Entity Recall (TAB gold annotations) ──
@@ -52,14 +52,14 @@
   ── Anonymization Metrics (prediction vs gold-masked) ──
     Exact Match    : 0.0000
     Word Accuracy  : 2.1232
-    BLEU-1         : 0.0000
-    BLEU-2         : 0.0000
-    BLEU-4         : 0.0000
-    ROUGE-1        : 0.0000
-    ROUGE-2        : 0.0000
-    ROUGE-L        : 0.0000
-    BERTScore P    : 0.0000
-    BERTScore R    : 0.0000
+    BLEU-1         : 76.6500
+    BLEU-2         : 70.6300
+    BLEU-4         : 62.1300
+    ROUGE-1        : 78.3500
+    ROUGE-2        : 71.0800
+    ROUGE-L        : 78.2800
+    BERTScore P    : 87.1500
+    BERTScore R    : 90.2300
     BERTScore F1   : 88.6300
 
   ── Privacy Leakage ──
@@ -96,7 +96,7 @@
   Combo  : distilroberta + deberta-mlm
   Masker : DistilRoBERTa-base fine-tuned for PII NER (6-layer)
   Filler : DeBERTa-v3 MLM filler (encoder-only, masked language model)
-  Runtime: 34.1s
+  Runtime: 32.0s
 ──────────────────────────────────────────────────────────────────────────────────────────
 
   ── Masker Entity Recall (TAB gold annotations) ──
@@ -114,14 +114,14 @@
   ── Anonymization Metrics (prediction vs gold-masked) ──
     Exact Match    : 0.0000
     Word Accuracy  : 32.1874
-    BLEU-1         : 0.0000
-    BLEU-2         : 0.0000
-    BLEU-4         : 0.0000
-    ROUGE-1        : 0.0000
-    ROUGE-2        : 0.0000
-    ROUGE-L        : 0.0000
-    BERTScore P    : 0.0000
-    BERTScore R    : 0.0000
+    BLEU-1         : 91.6500
+    BLEU-2         : 85.8400
+    BLEU-4         : 78.1000
+    ROUGE-1        : 90.5900
+    ROUGE-2        : 82.7100
+    ROUGE-L        : 90.5700
+    BERTScore P    : 94.8800
+    BERTScore R    : 91.7400
     BERTScore F1   : 93.2700
 
   ── Privacy Leakage ──
@@ -158,7 +158,7 @@
   Combo  : roberta + bart-base
   Masker : RoBERTa-base fine-tuned for PII NER (12-layer)
   Filler : BART-base Seq2Seq filler (encoder-decoder)
-  Runtime: 3m 34s
+  Runtime: 3m 4s
 ──────────────────────────────────────────────────────────────────────────────────────────
 
   ── Masker Entity Recall (TAB gold annotations) ──
@@ -176,14 +176,14 @@
   ── Anonymization Metrics (prediction vs gold-masked) ──
     Exact Match    : 0.0000
     Word Accuracy  : 2.3025
-    BLEU-1         : 0.0000
-    BLEU-2         : 0.0000
-    BLEU-4         : 0.0000
-    ROUGE-1        : 0.0000
-    ROUGE-2        : 0.0000
-    ROUGE-L        : 0.0000
-    BERTScore P    : 0.0000
-    BERTScore R    : 0.0000
+    BLEU-1         : 76.7900
+    BLEU-2         : 70.8900
+    BLEU-4         : 62.5400
+    ROUGE-1        : 78.3000
+    ROUGE-2        : 71.1700
+    ROUGE-L        : 78.2100
+    BERTScore P    : 87.0700
+    BERTScore R    : 90.0900
     BERTScore F1   : 88.5200
 
   ── Privacy Leakage ──
@@ -220,7 +220,7 @@
   Combo  : roberta + deberta-mlm
   Masker : RoBERTa-base fine-tuned for PII NER (12-layer)
   Filler : DeBERTa-v3 MLM filler (encoder-only, masked language model)
-  Runtime: 36.0s
+  Runtime: 32.7s
 ──────────────────────────────────────────────────────────────────────────────────────────
 
   ── Masker Entity Recall (TAB gold annotations) ──
@@ -238,14 +238,14 @@
   ── Anonymization Metrics (prediction vs gold-masked) ──
     Exact Match    : 0.0000
     Word Accuracy  : 32.0836
-    BLEU-1         : 0.0000
-    BLEU-2         : 0.0000
-    BLEU-4         : 0.0000
-    ROUGE-1        : 0.0000
-    ROUGE-2        : 0.0000
-    ROUGE-L        : 0.0000
-    BERTScore P    : 0.0000
-    BERTScore R    : 0.0000
+    BLEU-1         : 91.6800
+    BLEU-2         : 86.0000
+    BLEU-4         : 78.4100
+    ROUGE-1        : 90.4600
+    ROUGE-2        : 82.7500
+    ROUGE-L        : 90.4300
+    BERTScore P    : 94.9000
+    BERTScore R    : 91.6600
     BERTScore F1   : 93.2300
 
   ── Privacy Leakage ──
@@ -282,7 +282,7 @@
   Combo  : deberta + bart-base
   Masker : DeBERTa-v3-base fine-tuned for PII NER (12-layer)
   Filler : BART-base Seq2Seq filler (encoder-decoder)
-  Runtime: 3m 35s
+  Runtime: 3m 4s
 ──────────────────────────────────────────────────────────────────────────────────────────
 
   ── Masker Entity Recall (TAB gold annotations) ──
@@ -300,14 +300,14 @@
   ── Anonymization Metrics (prediction vs gold-masked) ──
     Exact Match    : 0.0000
     Word Accuracy  : 1.8922
-    BLEU-1         : 0.0000
-    BLEU-2         : 0.0000
-    BLEU-4         : 0.0000
-    ROUGE-1        : 0.0000
-    ROUGE-2        : 0.0000
-    ROUGE-L        : 0.0000
-    BERTScore P    : 0.0000
-    BERTScore R    : 0.0000
+    BLEU-1         : 76.7600
+    BLEU-2         : 71.0900
+    BLEU-4         : 63.0800
+    ROUGE-1        : 78.7900
+    ROUGE-2        : 71.9400
+    ROUGE-L        : 78.7300
+    BERTScore P    : 87.5300
+    BERTScore R    : 90.5500
     BERTScore F1   : 88.9900
 
   ── Privacy Leakage ──
@@ -344,7 +344,7 @@
   Combo  : deberta + deberta-mlm
   Masker : DeBERTa-v3-base fine-tuned for PII NER (12-layer)
   Filler : DeBERTa-v3 MLM filler (encoder-only, masked language model)
-  Runtime: 39.1s
+  Runtime: 35.8s
 ──────────────────────────────────────────────────────────────────────────────────────────
 
   ── Masker Entity Recall (TAB gold annotations) ──
@@ -362,14 +362,14 @@
   ── Anonymization Metrics (prediction vs gold-masked) ──
     Exact Match    : 0.0000
     Word Accuracy  : 35.8789
-    BLEU-1         : 0.0000
-    BLEU-2         : 0.0000
-    BLEU-4         : 0.0000
-    ROUGE-1        : 0.0000
-    ROUGE-2        : 0.0000
-    ROUGE-L        : 0.0000
-    BERTScore P    : 0.0000
-    BERTScore R    : 0.0000
+    BLEU-1         : 91.4400
+    BLEU-2         : 86.1600
+    BLEU-4         : 79.0300
+    ROUGE-1        : 90.6500
+    ROUGE-2        : 83.3100
+    ROUGE-L        : 90.6500
+    BERTScore P    : 95.0500
+    BERTScore R    : 92.0800
     BERTScore F1   : 93.5200
 
   ── Privacy Leakage ──
