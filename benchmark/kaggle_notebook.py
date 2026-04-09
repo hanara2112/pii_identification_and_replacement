@@ -3,9 +3,9 @@ SAHA-AL Benchmark — Full Evaluation (GPU)
 ==========================================
 Plain terminal script. No notebook abstractions.
 
-Prerequisites:
-  pip install sentence-transformers faker bert_score spacy \
-              presidio-analyzer presidio-anonymizer bitsandbytes accelerate autoawq
+Prerequisites (auto-installed by step 0):
+  pip install transformers==4.46.3 sentence-transformers==3.3.1 autoawq
+  pip install faker bert_score spacy presidio-analyzer presidio-anonymizer bitsandbytes accelerate
   python -m spacy download en_core_web_lg
 
 Run from benchmark/ directory:
@@ -83,8 +83,9 @@ def patch_bert(json_path, key):
 section(0, "DEPS + ENVIRONMENT CHECK")
 
 run("pip install -q --upgrade Pillow")
-run("pip install -q sentence-transformers faker bert_score spacy "
-    "presidio-analyzer presidio-anonymizer bitsandbytes accelerate autoawq")
+run("pip install -q 'transformers==4.46.3' 'sentence-transformers==3.3.1' autoawq")
+run("pip install -q faker bert_score spacy "
+    "presidio-analyzer presidio-anonymizer bitsandbytes accelerate")
 run("python -m spacy download en_core_web_lg -q 2>/dev/null || true")
 
 import torch

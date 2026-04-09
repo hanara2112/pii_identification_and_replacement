@@ -46,7 +46,7 @@ def _load_local_model(model_name):
 
     if _is_prequantized(model_name):
         print("Pre-quantized model detected (AWQ/GPTQ) — loading directly")
-        load_kwargs["dtype"] = torch.float16
+        load_kwargs["torch_dtype"] = torch.float16
     elif torch.cuda.is_available():
         try:
             from transformers import BitsAndBytesConfig
