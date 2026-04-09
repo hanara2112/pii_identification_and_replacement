@@ -49,12 +49,16 @@ def crr3(gold_records, predictions):
 
 # ── ERA ──
 
-def entity_recovery_attack(gold_records, predictions, train_records, top_k=5):
+def entity_recovery_attack(gold_records, predictions, train_records, top_k=5,
+                           max_pool_size=500):
     """
     Retrieval-based adversary: embed anonymized text, rank candidate entities
     by cosine similarity, measure if the original entity is recovered.
     Requires: pip install sentence-transformers
+
+    Optimized: pre-encodes entity pools and anonymized texts in batch.
     """
+    import random as _rng
     try:
         from sentence_transformers import SentenceTransformer
         from sentence_transformers.util import cos_sim
@@ -64,41 +68,69 @@ def entity_recovery_attack(gold_records, predictions, train_records, top_k=5):
 
     model = SentenceTransformer("all-MiniLM-L6-v2")
 
-    type_pools: dict[str, list[str]] = {}
+    # Build per-type candidate pools from training data
+    type_pools_set: dict[str, set[str]] = {}
     for r in train_records:
         for e in r.get("entities", []):
             etype = e.get("type", "UNKNOWN")
             text = e.get("text", "")
             if text:
-                type_pools.setdefault(etype, set()).add(text)
-    type_pools = {k: list(v) for k, v in type_pools.items()}
+                type_pools_set.setdefault(etype, set()).add(text)
+
+    # Cap pool size and pre-encode each pool ONCE
+    type_pools: dict[str, list[str]] = {}
+    type_pool_embs = {}
+    print(f"  ERA: Pre-encoding entity pools (max {max_pool_size} per type)...")
+    for etype, pool_set in type_pools_set.items():
+        pool_list = list(pool_set)
+        if len(pool_list) > max_pool_size:
+            _rng.seed(42)
+            pool_list = _rng.sample(pool_list, max_pool_size)
+        type_pools[etype] = pool_list
+        type_pool_embs[etype] = model.encode(pool_list, convert_to_tensor=True,
+                                              batch_size=256, show_progress_bar=False)
+        print(f"    {etype}: {len(pool_list)} candidates encoded")
+
+    # Batch-encode all anonymized texts
+    print(f"  ERA: Encoding {len(predictions)} anonymized texts...")
+    anon_texts = [p.get("anonymized_text", "") for p in predictions]
+    anon_embs = model.encode(anon_texts, convert_to_tensor=True,
+                             batch_size=128, show_progress_bar=True)
 
     top1_hits, top5_hits, total = 0, 0, 0
 
-    for g, p in zip(gold_records, predictions):
+    for idx, (g, p) in enumerate(zip(gold_records, predictions)):
         for ent in g.get("entities", []):
             if ent.get("start", -1) < 0:
                 continue
             etype = ent.get("type", "UNKNOWN")
             original_val = ent["text"]
 
-            pool = list(type_pools.get(etype, []))
-            if original_val not in pool:
-                pool.append(original_val)
-            if len(pool) < 2:
+            pool = type_pools.get(etype)
+            if pool is None or len(pool) < 2:
                 continue
 
-            anon_emb = model.encode(p["anonymized_text"], convert_to_tensor=True)
-            pool_embs = model.encode(pool, convert_to_tensor=True)
+            # Ensure original is in pool for fair evaluation
+            if original_val not in pool:
+                pool = pool + [original_val]
+                extra_emb = model.encode([original_val], convert_to_tensor=True)
+                import torch
+                pool_embs = torch.cat([type_pool_embs[etype], extra_emb], dim=0)
+            else:
+                pool_embs = type_pool_embs[etype]
 
-            scores = cos_sim(anon_emb, pool_embs)[0]
-            ranked = sorted(range(len(pool)), key=lambda i: scores[i], reverse=True)
+            scores = cos_sim(anon_embs[idx].unsqueeze(0), pool_embs)[0]
+            ranked = scores.argsort(descending=True).tolist()
 
             total += 1
             if pool[ranked[0]] == original_val:
                 top1_hits += 1
             if original_val in [pool[ranked[i]] for i in range(min(top_k, len(ranked)))]:
                 top5_hits += 1
+
+        if (idx + 1) % 100 == 0:
+            print(f"  ERA: {idx+1}/{len(gold_records)} records processed "
+                  f"(top1={top1_hits}/{total})")
 
     return {
         "era_top1": round(top1_hits / total * 100, 2) if total else 0,
