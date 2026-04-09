@@ -829,14 +829,14 @@ def full_evaluation(model, dataloader, tokenizer, device, eval_batch_size,
         compute_bert=True,
     )
 
-    for key in ["exact_match", "word_accuracy", "bleu", "rouge_1", "rouge_l",
+    for key in ["exact_match", "word_accuracy", "bleu", "rouge1", "rougeL",
                  "bertscore_f1", "entity_leakage_rate"]:
         logger.info(f"  {key}: {metrics.get(key, 0):.2f}")
 
     tqdm.write(f"\n  ── {split_name.upper()} RESULTS ──")
     tqdm.write(f"  Loss: {avg_loss:.4f}  |  Exact: {metrics['exact_match']:.2f}%  |  "
                f"Word Acc: {metrics['word_accuracy']:.2f}%")
-    tqdm.write(f"  BLEU: {metrics['bleu']:.2f}  |  ROUGE-L: {metrics['rouge_l']:.2f}  |  "
+    tqdm.write(f"  BLEU: {metrics['bleu']:.2f}  |  ROUGE-L: {metrics['rougeL']:.2f}  |  "
                f"BERTScore F1: {metrics.get('bertscore_f1', 0):.2f}")
     tqdm.write(f"  Entity Leakage: {metrics.get('entity_leakage_rate', 0):.2f}% "
                f"({metrics.get('total_entities_leaked', 0)}/{metrics.get('total_entities_checked', 0)})")
@@ -1075,7 +1075,7 @@ def train_single_model(model_key, config, device, num_gpus):
         # Print val vs test comparison
         tqdm.write(f"\n  {'Metric':<25} {'Val':<12} {'Test':<12}")
         tqdm.write(f"  {'─'*25} {'─'*12} {'─'*12}")
-        for m in ["exact_match", "word_accuracy", "bleu", "rouge_l", "bertscore_f1", "entity_leakage_rate"]:
+        for m in ["exact_match", "word_accuracy", "bleu", "rougeL", "bertscore_f1", "entity_leakage_rate"]:
             v = history["final_metrics"].get(m, 0)
             t = history["test_metrics"].get(m, 0)
             tqdm.write(f"  {m:<25} {v:<12.2f} {t:<12.2f}")

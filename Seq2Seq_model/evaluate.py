@@ -451,16 +451,16 @@ def write_readable_report(all_results, filepath):
             w(f"  │  Word Accuracy:       {m['word_accuracy']:<38.2f} │")
             w(f"  │                                                           │")
             w(f"  │  BLEU:                {m['bleu']:<38.2f} │")
-            w(f"  │  BLEU-1:              {m['bleu_1']:<38.2f} │")
-            w(f"  │  BLEU-2:              {m['bleu_2']:<38.2f} │")
-            w(f"  │  BLEU-4:              {m['bleu_4']:<38.2f} │")
+            w(f"  │  BLEU-1:              {m['bleu1']:<38.2f} │")
+            w(f"  │  BLEU-2:              {m['bleu2']:<38.2f} │")
+            w(f"  │  BLEU-4:              {m['bleu4']:<38.2f} │")
             w(f"  │                                                           │")
-            w(f"  │  ROUGE-1:             {m['rouge_1']:<38.2f} │")
-            w(f"  │  ROUGE-2:             {m['rouge_2']:<38.2f} │")
-            w(f"  │  ROUGE-L:             {m['rouge_l']:<38.2f} │")
+            w(f"  │  ROUGE-1:             {m['rouge1']:<38.2f} │")
+            w(f"  │  ROUGE-2:             {m['rouge2']:<38.2f} │")
+            w(f"  │  ROUGE-L:             {m['rougeL']:<38.2f} │")
             w(f"  │                                                           │")
-            w(f"  │  BERTScore P:         {m.get('bertscore_precision', 0):<38.2f} │")
-            w(f"  │  BERTScore R:         {m.get('bertscore_recall', 0):<38.2f} │")
+            w(f"  │  BERTScore P:         {m.get('bertscore_p', 0):<38.2f} │")
+            w(f"  │  BERTScore R:         {m.get('bertscore_r', 0):<38.2f} │")
             w(f"  │  BERTScore F1:        {m.get('bertscore_f1', 0):<38.2f} │")
             w(f"  │                                                           │")
             w(f"  │  Leakage Rate:        {m.get('leakage_rate', 0):<38.2f} │")
@@ -546,7 +546,7 @@ def write_readable_report(all_results, filepath):
             row += f" {m['exact_match']:>10.2f}"
             row += f" {m['word_accuracy']:>10.2f}"
             row += f" {m['bleu']:>10.2f}"
-            row += f" {m['rouge_l']:>10.2f}"
+            row += f" {m['rougeL']:>10.2f}"
             row += f" {m.get('bertscore_f1', 0):>10.2f}"
             row += f" {m.get('entity_leakage_rate', 0):>10.2f}"
         else:
@@ -665,7 +665,7 @@ def main():
                 "sample_predictions": test_samples,
             }
             print(f"    Loss: {test_loss:.4f}  |  BLEU: {test_metrics['bleu']:.2f}  |  "
-                  f"ROUGE-L: {test_metrics['rouge_l']:.2f}  |  "
+                  f"ROUGE-L: {test_metrics['rougeL']:.2f}  |  "
                   f"BERTScore F1: {test_metrics.get('bertscore_f1', 0):.2f}  |  "
                   f"Leak: {test_metrics.get('entity_leakage_rate', 0):.2f}%")
         else:

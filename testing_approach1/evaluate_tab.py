@@ -410,8 +410,8 @@ def write_report(all_results: list, tab_data: list, filepath: str) -> None:
             f"  {r['model_key']:<22} {r.get('params_M','?'):>6}M"
             f" {m.get('exact_match',0):>7.3f}"
             f" {m.get('word_accuracy',0):>7.3f}"
-            f" {m.get('bleu_4',0):>7.3f}"
-            f" {m.get('rouge_l',0):>8.3f}"
+            f" {m.get('bleu4',0):>7.3f}"
+            f" {m.get('rougeL',0):>8.3f}"
             f" {m.get('bertscore_f1',0):>10.3f}"
             f" {er['overall_recall']:>8.3f}"
             f" {m.get('sample_leakage_rate',0)*100:>6.1f}%"
@@ -444,14 +444,14 @@ def write_report(all_results: list, tab_data: list, filepath: str) -> None:
         blank()
         m = r["metrics"]
         lines.append("  ── Anonymization Quality (vs gold-masked) ──")
-        lines.append(f"    BLEU-1    : {m.get('bleu_1',0):.4f}")
-        lines.append(f"    BLEU-2    : {m.get('bleu_2',0):.4f}")
-        lines.append(f"    BLEU-4    : {m.get('bleu_4',0):.4f}")
-        lines.append(f"    ROUGE-1   : {m.get('rouge_1',0):.4f}")
-        lines.append(f"    ROUGE-2   : {m.get('rouge_2',0):.4f}")
-        lines.append(f"    ROUGE-L   : {m.get('rouge_l',0):.4f}")
-        lines.append(f"    BERTScore P: {m.get('bertscore_precision',0):.4f}")
-        lines.append(f"    BERTScore R: {m.get('bertscore_recall',0):.4f}")
+        lines.append(f"    BLEU-1    : {m.get('bleu1',0):.4f}")
+        lines.append(f"    BLEU-2    : {m.get('bleu2',0):.4f}")
+        lines.append(f"    BLEU-4    : {m.get('bleu4',0):.4f}")
+        lines.append(f"    ROUGE-1   : {m.get('rouge1',0):.4f}")
+        lines.append(f"    ROUGE-2   : {m.get('rouge2',0):.4f}")
+        lines.append(f"    ROUGE-L   : {m.get('rougeL',0):.4f}")
+        lines.append(f"    BERTScore P: {m.get('bertscore_p',0):.4f}")
+        lines.append(f"    BERTScore R: {m.get('bertscore_r',0):.4f}")
         lines.append(f"    BERTScore F1:{m.get('bertscore_f1',0):.4f}")
         lines.append(f"    Exact Match: {m.get('exact_match',0):.4f}")
         lines.append(f"    Word Acc   : {m.get('word_accuracy',0):.4f}")
