@@ -208,7 +208,12 @@ def compute_metrics(eval_preds):
 
 TRAINING_ARGS = """\
 os.makedirs(CKPT_DIR, exist_ok=True)
-os.makedirs(LOG_DIR,  exist_ok=True)
+
+# Estimate warmup steps from ratio (30k train rows, eff. batch=128)
+_steps_per_epoch = math.ceil(len(tokenized["train"]) / (PER_DEVICE_BATCH * 2 * GRAD_ACCUM))
+_total_steps     = _steps_per_epoch * NUM_EPOCHS
+_warmup_steps    = max(1, int(_total_steps * WARMUP_RATIO))
+print(f"Steps/epoch: {_steps_per_epoch}  Total: {_total_steps}  Warmup: {_warmup_steps}")
 
 training_args = Seq2SeqTrainingArguments(
     output_dir                  = CKPT_DIR,
@@ -221,7 +226,7 @@ training_args = Seq2SeqTrainingArguments(
 
     # ── optimiser ────────────────────────────────────────────────────────────
     learning_rate               = LR,
-    warmup_ratio                = WARMUP_RATIO,
+    warmup_steps                = _warmup_steps,
     weight_decay                = WEIGHT_DECAY,
     label_smoothing_factor      = LABEL_SMOOTH,
 
@@ -235,7 +240,7 @@ training_args = Seq2SeqTrainingArguments(
     generation_num_beams        = NUM_BEAMS_EVAL,
 
     # ── checkpointing ────────────────────────────────────────────────────────
-    evaluation_strategy         = "epoch",
+    eval_strategy               = "epoch",
     save_strategy               = "epoch",
     load_best_model_at_end      = True,
     metric_for_best_model       = "bleu",
@@ -243,21 +248,20 @@ training_args = Seq2SeqTrainingArguments(
     save_total_limit            = SAVE_TOTAL,
 
     # ── logging ──────────────────────────────────────────────────────────────
-    logging_dir                 = LOG_DIR,
     logging_steps               = 100,
     report_to                   = "none",
     dataloader_num_workers      = 4,
 )
 
 trainer = Seq2SeqTrainer(
-    model          = model,
-    args           = training_args,
-    train_dataset  = tokenized["train"],
-    eval_dataset   = tokenized["val"],
-    tokenizer      = tokenizer,
-    data_collator  = data_collator,
-    compute_metrics= compute_metrics,
-    callbacks      = [EarlyStoppingCallback(early_stopping_patience=2)],
+    model            = model,
+    args             = training_args,
+    train_dataset    = tokenized["train"],
+    eval_dataset     = tokenized["val"],
+    processing_class = tokenizer,
+    data_collator    = data_collator,
+    compute_metrics  = compute_metrics,
+    callbacks        = [EarlyStoppingCallback(early_stopping_patience=2)],
 )
 """
 
@@ -488,7 +492,6 @@ NUM_BEAMS_EVAL   = 4      # beam search for eval / inference
 SAVE_TOTAL       = 3      # keep at most 3 checkpoints
 
 CKPT_DIR = "/kaggle/working/checkpoints"
-LOG_DIR  = "/kaggle/working/logs"
 """
 
     TITLE_MD = f"""\
