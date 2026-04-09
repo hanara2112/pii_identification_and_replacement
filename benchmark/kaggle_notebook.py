@@ -86,9 +86,9 @@ import torch
 if torch.cuda.is_available():
     for i in range(torch.cuda.device_count()):
         name = torch.cuda.get_device_name(i)
-        mem = torch.cuda.get_device_properties(i).total_mem / 1e9
+        mem = torch.cuda.get_device_properties(i).total_memory / 1e9
         log(f"GPU {i}: {name} — {mem:.0f} GB VRAM")
-    total_vram = sum(torch.cuda.get_device_properties(i).total_mem
+    total_vram = sum(torch.cuda.get_device_properties(i).total_memory
                      for i in range(torch.cuda.device_count())) / 1e9
     log(f"Total VRAM: {total_vram:.0f} GB")
     if total_vram >= 70:
