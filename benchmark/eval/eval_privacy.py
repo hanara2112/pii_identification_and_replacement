@@ -152,26 +152,41 @@ Only output guesses, nothing else."""
 
 
 def _load_local_llm(model_name):
-    """Load a local HuggingFace model for LRR (no API key needed)."""
+    """Load a local HuggingFace model for LRR with 4-bit quantization if available."""
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     print(f"  LRR: Loading local model {model_name}...")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-        device_map="auto",
-    )
+
+    load_kwargs = {"device_map": "auto"}
+    if torch.cuda.is_available():
+        try:
+            from transformers import BitsAndBytesConfig
+            load_kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16
+            )
+            print("  LRR: Using 4-bit quantization")
+        except (ImportError, Exception):
+            load_kwargs["torch_dtype"] = torch.float16
+    model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     return model, tokenizer
 
 
 def _generate_local(model, tokenizer, prompt, max_new_tokens=256):
-    """Generate text from a local model."""
+    """Generate text from a local model using chat template if available."""
     import torch
-    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512)
+    messages = [{"role": "user", "content": prompt}]
+    try:
+        full_prompt = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+    except Exception:
+        full_prompt = prompt
+
+    inputs = tokenizer(full_prompt, return_tensors="pt", truncation=True, max_length=1024)
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
     with torch.no_grad():
         outputs = model.generate(
@@ -334,8 +349,8 @@ def main():
     parser.add_argument("--lrr-sample", type=int, default=300)
     parser.add_argument("--lrr-local", action="store_true",
                         help="Use a local HuggingFace model instead of OpenAI API")
-    parser.add_argument("--lrr-model", type=str, default="Qwen/Qwen2.5-1.5B-Instruct",
-                        help="Local model name (default: Qwen/Qwen2.5-1.5B-Instruct)")
+    parser.add_argument("--lrr-model", type=str, default="Qwen/Qwen2.5-7B-Instruct",
+                        help="Local model name (default: Qwen/Qwen2.5-7B-Instruct)")
     parser.add_argument("--lrr-api-model", type=str, default="gpt-4o-mini",
                         help="API model name for OpenAI-compatible endpoints "
                              "(e.g., llama-3.3-70b-versatile for Groq)")

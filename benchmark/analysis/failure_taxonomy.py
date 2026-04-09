@@ -65,7 +65,7 @@ def classify_failures(gold_records, predictions, max_examples=10):
             tokens = re.findall(r"\w+", ent_text)
             partial_leaked = [
                 t for t in tokens
-                if len(t) > 2
+                if len(t) > 3
                 and re.search(rf"(?<!\w){re.escape(t)}(?!\w)", pred, re.IGNORECASE)
             ]
             if partial_leaked and len(partial_leaked) < len(tokens):
