@@ -151,22 +151,30 @@ REPLACEMENT -> YOUR_GUESS
 Only output guesses, nothing else."""
 
 
+def _is_prequantized(model_name):
+    tag = model_name.lower()
+    return any(q in tag for q in ("awq", "gptq", "gguf"))
+
+
 def _load_local_llm(model_name):
     """Load a local HuggingFace model for LRR with 4-bit quantization if available."""
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     print(f"  LRR: Loading local model {model_name}...")
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
-    load_kwargs = {"device_map": "auto"}
-    if torch.cuda.is_available():
+    load_kwargs = {"device_map": "auto", "trust_remote_code": True}
+    if _is_prequantized(model_name):
+        print("  LRR: Pre-quantized model detected (AWQ/GPTQ) — loading directly")
+        load_kwargs["torch_dtype"] = torch.float16
+    elif torch.cuda.is_available():
         try:
             from transformers import BitsAndBytesConfig
             load_kwargs["quantization_config"] = BitsAndBytesConfig(
                 load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16
             )
-            print("  LRR: Using 4-bit quantization")
+            print("  LRR: Using bitsandbytes 4-bit quantization")
         except (ImportError, Exception):
             load_kwargs["torch_dtype"] = torch.float16
     model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
@@ -349,8 +357,9 @@ def main():
     parser.add_argument("--lrr-sample", type=int, default=300)
     parser.add_argument("--lrr-local", action="store_true",
                         help="Use a local HuggingFace model instead of OpenAI API")
-    parser.add_argument("--lrr-model", type=str, default="Qwen/Qwen2.5-7B-Instruct",
-                        help="Local model name (default: Qwen/Qwen2.5-7B-Instruct)")
+    parser.add_argument("--lrr-model", type=str, default="Qwen/Qwen2.5-72B-Instruct-AWQ",
+                        help="Local model name (default: Qwen/Qwen2.5-72B-Instruct-AWQ; "
+                             "use AWQ/GPTQ variants to avoid downloading full FP16 weights)")
     parser.add_argument("--lrr-api-model", type=str, default="gpt-4o-mini",
                         help="API model name for OpenAI-compatible endpoints "
                              "(e.g., llama-3.3-70b-versatile for Groq)")

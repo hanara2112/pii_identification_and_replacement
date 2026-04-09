@@ -1,46 +1,55 @@
 """
-SAHA-AL Benchmark — Final Evaluation
-======================================
-Kaggle/Colab compatible. CPU-only. Uses Groq free API.
+SAHA-AL Benchmark — Full Evaluation (GPU)
+==========================================
+Plain terminal script. No notebook abstractions.
 
-HOW TO RUN ON KAGGLE:
-  1. New Notebook → Settings → Internet ON, Accelerator = None (CPU is fine)
-  2. Paste this entire file into a single code cell
-  3. Or run: !python benchmark/kaggle_notebook.py
-  4. Set your Groq key on line 23 below
+Prerequisites:
+  pip install sentence-transformers faker bert_score spacy \
+              presidio-analyzer presidio-anonymizer bitsandbytes accelerate autoawq
+  python -m spacy download en_core_web_lg
 
-Total runtime: ~40-50 min. All results saved incrementally.
+Run from benchmark/ directory:
+  cd pii_identification_and_replacement/benchmark
+  python kaggle_notebook.py
+
+Model selection (edit LLM_MODEL below):
+  Single A10 (24GB):  Qwen/Qwen2.5-32B-Instruct-AWQ   (~18GB VRAM)
+  2x A10 / A100 40GB: Qwen/Qwen2.5-72B-Instruct-AWQ   (~40GB VRAM)
+  H100 (80GB):        Qwen/Qwen2.5-72B-Instruct-AWQ   (~40GB VRAM)
+
+Total runtime: ~40-60 min on A10, ~25-40 min on H100.
 """
 
 import os, sys, json, shutil, time
-from datetime import datetime
 
 # ┌──────────────────────────────────────────────────────────────────────┐
-# │  CONFIG — SET YOUR GROQ KEY HERE                                    │
+# │  CONFIG — edit these                                                │
 # └──────────────────────────────────────────────────────────────────────┘
-GROQ_KEY = "YOUR_GROQ_KEY_HERE"
-LLM_MODEL = "llama-3.3-70b-versatile"
-LLM_SAMPLE = 500       # records for LLM baseline (500 is enough)
-LRR_SAMPLE = 200       # records for LRR attack
-ERA_SAMPLE = 500       # records for ERA attack
-API_DELAY = 2.5        # seconds between Groq API calls (free tier = 30 req/min)
+LLM_MODEL   = "Qwen/Qwen2.5-32B-Instruct-AWQ"  # ~18GB VRAM (fits A10 24GB)
+LLM_SAMPLE  = 1000     # records for LLM zero-shot baseline
+LRR_SAMPLE  = 300      # records per system for LRR attack
+ERA_SAMPLE  = 500      # records for ERA retrieval attack
 
 # ┌──────────────────────────────────────────────────────────────────────┐
 # │  HELPERS                                                            │
 # └──────────────────────────────────────────────────────────────────────┘
+_T0 = time.time()
+
 def log(msg):
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
+    elapsed = time.time() - _T0
+    m, s = divmod(int(elapsed), 60)
+    print(f"[{m:02d}:{s:02d}] {msg}", flush=True)
 
 def run(cmd):
-    log(f"RUN: {cmd[:120]}")
+    log(f"$ {cmd}")
     ret = os.system(cmd)
     if ret != 0:
         log(f"  ⚠ exit code {ret}")
     return ret
 
-def section(title):
+def section(num, title):
     print(f"\n{'='*70}", flush=True)
-    log(title)
+    log(f"STEP {num}: {title}")
     print("="*70, flush=True)
 
 def load_json(path):
@@ -50,10 +59,11 @@ def load_json(path):
     return None
 
 def save_json(data, path):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w") as f:
         json.dump(data, f, indent=2)
 
-# Known BERTScore from previous GPU run (text-based metric, won't change)
+# BERTScore from prior GPU runs (skip recomputation for existing systems)
 BERT_CACHE = {
     "bart-base-pii": 92.74, "flan-t5-small-pii": 92.47, "t5-small-pii": 92.59,
     "distilbart-pii": 86.34, "t5-efficient-tiny-pii": 92.57,
@@ -66,127 +76,167 @@ def patch_bert(json_path, key):
         d["bertscore_f1"] = BERT_CACHE.get(key, 0)
         save_json(d, json_path)
 
-# ┌──────────────────────────────────────────────────────────────────────┐
-# │  1. SETUP                                                          │
-# └──────────────────────────────────────────────────────────────────────┘
-section("1. SETUP")
 
-run("pip install -q sentence-transformers faker bert_score spacy openai "
-    "presidio-analyzer presidio-anonymizer")
-run("python -m spacy download en_core_web_lg -q")
+# ╔══════════════════════════════════════════════════════════════════════╗
+# ║  0. SANITY CHECKS                                                  ║
+# ╚══════════════════════════════════════════════════════════════════════╝
+section(0, "ENVIRONMENT CHECK")
 
-os.environ["OPENAI_API_KEY"] = GROQ_KEY
-os.environ["OPENAI_BASE_URL"] = "https://api.groq.com/openai/v1"
-
-if not os.path.exists("repo"):
-    run("git clone https://github.com/hanara2112/pii_identification_and_replacement.git repo")
+import torch
+if torch.cuda.is_available():
+    for i in range(torch.cuda.device_count()):
+        name = torch.cuda.get_device_name(i)
+        mem = torch.cuda.get_device_properties(i).total_mem / 1e9
+        log(f"GPU {i}: {name} — {mem:.0f} GB VRAM")
+    total_vram = sum(torch.cuda.get_device_properties(i).total_mem
+                     for i in range(torch.cuda.device_count())) / 1e9
+    log(f"Total VRAM: {total_vram:.0f} GB")
+    if total_vram >= 70:
+        log(f"Enough VRAM for 72B AWQ — consider setting LLM_MODEL='Qwen/Qwen2.5-72B-Instruct-AWQ'")
 else:
-    run("cd repo && git pull origin main")
+    log("WARNING: No GPU detected. Local LLM inference will be extremely slow.")
+    sys.exit(1)
 
-os.chdir("repo/benchmark")
-for d in ["results", "Results", "figures"]:
+for needed in ["data/test.jsonl", "data/train.jsonl"]:
+    if not os.path.exists(needed):
+        log(f"FATAL: {needed} not found. Run from benchmark/ directory.")
+        sys.exit(1)
+log(f"Working directory: {os.getcwd()}")
+log(f"Model: {LLM_MODEL}")
+
+for d in ["results", "Results", "figures", "predictions"]:
     os.makedirs(d, exist_ok=True)
 
-log(f"Data: {os.listdir('data')}")
-log(f"Predictions: {os.listdir('predictions')}")
 
-# ┌──────────────────────────────────────────────────────────────────────┐
-# │  2. TASK 2 — Anonymization Quality (8 systems, ~2 min)             │
-# └──────────────────────────────────────────────────────────────────────┘
-section("2. TASK 2: Anonymization Quality (8 systems)")
+# ╔══════════════════════════════════════════════════════════════════════╗
+# ║  1. TASK 2: Anonymization Quality — 8 existing systems             ║
+# ╚══════════════════════════════════════════════════════════════════════╝
+section(1, "TASK 2: Anonymization Quality (8 existing systems)")
 
-seq2seq = ["bart-base-pii", "t5-small-pii", "flan-t5-small-pii",
-           "distilbart-pii", "t5-efficient-tiny-pii"]
-rule = ["regex", "spacy", "presidio"]
-
-for m in seq2seq:
+for m in ["bart-base-pii", "t5-small-pii", "flan-t5-small-pii",
+          "distilbart-pii", "t5-efficient-tiny-pii"]:
+    pred = f"predictions/predictions_{m}.jsonl"
+    out  = f"Results/eval_anon_{m}.json"
+    if not os.path.exists(pred):
+        log(f"  skip {m}: {pred} missing")
+        continue
     run(f"python -m eval.eval_anonymization --gold data/test.jsonl "
-        f"--pred predictions/predictions_{m}.jsonl "
-        f"--output Results/eval_anon_{m}.json --print-types --skip-nli --skip-bertscore")
-    patch_bert(f"Results/eval_anon_{m}.json", m)
-
-for m in rule:
-    run(f"python -m eval.eval_anonymization --gold data/test.jsonl "
-        f"--pred predictions/{m}_predictions.jsonl "
-        f"--output Results/eval_anon_{m}.json --print-types --skip-nli --skip-bertscore")
-    patch_bert(f"Results/eval_anon_{m}.json", m)
-
-log("Task 2 complete — 8 systems evaluated")
-
-# ┌──────────────────────────────────────────────────────────────────────┐
-# │  3. TASK 1 — PII Detection (~1 min)                                │
-# └──────────────────────────────────────────────────────────────────────┘
-section("3. TASK 1: PII Detection")
+        f"--pred {pred} --output {out} --print-types --skip-nli --skip-bertscore")
+    patch_bert(out, m)
 
 for m in ["regex", "spacy", "presidio"]:
+    pred = f"predictions/{m}_predictions.jsonl"
+    out  = f"Results/eval_anon_{m}.json"
+    if not os.path.exists(pred):
+        log(f"  skip {m}: {pred} missing")
+        continue
+    run(f"python -m eval.eval_anonymization --gold data/test.jsonl "
+        f"--pred {pred} --output {out} --print-types --skip-nli --skip-bertscore")
+    patch_bert(out, m)
+
+log("Task 2 done (8 systems)")
+
+
+# ╔══════════════════════════════════════════════════════════════════════╗
+# ║  2. TASK 1: PII Detection                                          ║
+# ╚══════════════════════════════════════════════════════════════════════╝
+section(2, "TASK 1: PII Detection (3 rule-based)")
+
+for m in ["regex", "spacy", "presidio"]:
+    spans = f"predictions/{m}_spans.jsonl"
+    if not os.path.exists(spans):
+        log(f"  skip {m}: {spans} missing")
+        continue
     run(f"python -m eval.eval_detection --gold data/test.jsonl "
-        f"--pred predictions/{m}_spans.jsonl --output results/eval_det_{m}.json")
+        f"--pred {spans} --output results/eval_det_{m}.json")
 
-log("Task 1 complete")
+log("Task 1 done")
 
-# ┌──────────────────────────────────────────────────────────────────────┐
-# │  4. LLM BASELINE — Llama 70B via Groq (~15 min for 500 samples)    │
-# └──────────────────────────────────────────────────────────────────────┘
-section(f"4. LLM BASELINE: {LLM_MODEL} ({LLM_SAMPLE} samples via Groq)")
+
+# ╔══════════════════════════════════════════════════════════════════════╗
+# ║  3. LLM BASELINE: Local model, zero-shot anonymization             ║
+# ╚══════════════════════════════════════════════════════════════════════╝
+section(3, f"LLM BASELINE: {LLM_MODEL} ({LLM_SAMPLE} samples)")
 
 run(f"python -m baselines.llm_baseline --gold data/test.jsonl "
     f"--output predictions/predictions_llm.jsonl "
-    f"--model {LLM_MODEL} --sample {LLM_SAMPLE} --delay {API_DELAY}")
+    f"--local --local-model {LLM_MODEL} --sample {LLM_SAMPLE}")
 
 if os.path.exists("predictions/predictions_llm.jsonl"):
+    # Compute BERTScore for the NEW LLM baseline (GPU makes this fast)
     run("python -m eval.eval_anonymization --gold data/test.jsonl "
         "--pred predictions/predictions_llm.jsonl "
-        "--output Results/eval_anon_llm.json --print-types --skip-nli --skip-bertscore")
-    log("LLM baseline evaluated")
+        "--output Results/eval_anon_llm.json --print-types --skip-nli")
+    log("LLM baseline evaluated (with BERTScore)")
 else:
-    log("LLM baseline skipped (no predictions generated)")
+    log("LLM baseline: no predictions generated")
 
-# ┌──────────────────────────────────────────────────────────────────────┐
-# │  5. TASK 3 — Privacy: CRR-3 + ERA + UAC (~15 min on CPU)           │
-# └──────────────────────────────────────────────────────────────────────┘
-section("5. TASK 3: Privacy (CRR-3 + ERA + UAC)")
 
-for name, pred in [("bart", "predictions/predictions_bart-base-pii.jsonl"),
-                    ("presidio", "predictions/presidio_predictions.jsonl")]:
+# ╔══════════════════════════════════════════════════════════════════════╗
+# ║  4. TASK 3: Privacy — CRR-3 + ERA + UAC                            ║
+# ╚══════════════════════════════════════════════════════════════════════╝
+section(4, "TASK 3: Privacy Metrics (CRR-3, ERA, UAC)")
+
+privacy_systems = [
+    ("bart",     "predictions/predictions_bart-base-pii.jsonl"),
+    ("presidio", "predictions/presidio_predictions.jsonl"),
+]
+
+for name, pred in privacy_systems:
+    if not os.path.exists(pred):
+        log(f"  skip {name}: {pred} missing")
+        continue
     log(f"Privacy eval: {name}")
     run(f"python -m eval.eval_privacy --gold data/test.jsonl --pred {pred} "
         f"--train data/train.jsonl --output results/eval_privacy_{name}.json "
         f"--era-sample {ERA_SAMPLE} --skip-lrr")
 
-log("Privacy (CRR-3 + ERA + UAC) complete")
+log("Privacy (CRR-3 + ERA + UAC) done")
 
-# ┌──────────────────────────────────────────────────────────────────────┐
-# │  6. LRR — LLM Attack on BART + Presidio (~10 min via Groq)         │
-# └──────────────────────────────────────────────────────────────────────┘
-section(f"6. LRR: {LLM_MODEL} attacking BART + Presidio")
 
-for name, pred in [("bart", "predictions/predictions_bart-base-pii.jsonl"),
-                    ("presidio", "predictions/presidio_predictions.jsonl")]:
-    log(f"LRR attack: {name}")
+# ╔══════════════════════════════════════════════════════════════════════╗
+# ║  5. LRR: LLM Re-identification Attack                              ║
+# ║     Same local model tries to reverse anonymization                 ║
+# ╚══════════════════════════════════════════════════════════════════════╝
+section(5, f"LRR ATTACK: {LLM_MODEL} vs BART + Presidio ({LRR_SAMPLE} samples)")
+
+for name, pred in privacy_systems:
+    if not os.path.exists(pred):
+        log(f"  skip LRR on {name}: {pred} missing")
+        continue
+    log(f"LRR attack on {name}")
     run(f"python -m eval.eval_privacy --gold data/test.jsonl --pred {pred} "
         f"--train data/train.jsonl --output results/eval_privacy_{name}_lrr.json "
-        f"--skip-era --lrr-api-model {LLM_MODEL} --lrr-sample {LRR_SAMPLE}")
+        f"--skip-era --lrr-local --lrr-model {LLM_MODEL} --lrr-sample {LRR_SAMPLE}")
 
-log("LRR complete")
+log("LRR done")
 
-# ┌──────────────────────────────────────────────────────────────────────┐
-# │  7. FAILURE TAXONOMY (~1 min)                                       │
-# └──────────────────────────────────────────────────────────────────────┘
-section("7. FAILURE TAXONOMY (4 systems)")
 
-for name, pred in [("bart-base-pii", "predictions/predictions_bart-base-pii.jsonl"),
-                    ("spacy", "predictions/spacy_predictions.jsonl"),
-                    ("presidio", "predictions/presidio_predictions.jsonl"),
-                    ("regex", "predictions/regex_predictions.jsonl")]:
+# ╔══════════════════════════════════════════════════════════════════════╗
+# ║  6. FAILURE TAXONOMY                                                ║
+# ╚══════════════════════════════════════════════════════════════════════╝
+section(6, "FAILURE TAXONOMY")
+
+fail_systems = [
+    ("bart-base-pii", "predictions/predictions_bart-base-pii.jsonl"),
+    ("spacy",         "predictions/spacy_predictions.jsonl"),
+    ("presidio",      "predictions/presidio_predictions.jsonl"),
+    ("regex",         "predictions/regex_predictions.jsonl"),
+]
+
+for name, pred in fail_systems:
+    if not os.path.exists(pred):
+        continue
     run(f"python -m analysis.failure_taxonomy --gold data/test.jsonl "
         f"--pred {pred} --output results/failure_{name}.json")
 
-log("Failure taxonomy complete")
+log("Failure taxonomy done")
 
-# ┌──────────────────────────────────────────────────────────────────────┐
-# │  8. PARETO FRONTIER                                                 │
-# └──────────────────────────────────────────────────────────────────────┘
-section("8. PARETO FRONTIER")
+
+# ╔══════════════════════════════════════════════════════════════════════╗
+# ║  7. PARETO FRONTIER                                                 ║
+# ╚══════════════════════════════════════════════════════════════════════╝
+section(7, "PARETO FRONTIER")
 
 pareto_map = {
     "regex": "Results/eval_anon_regex.json",
@@ -199,60 +249,58 @@ pareto_map = {
     "t5-eff-tiny": "Results/eval_anon_t5-efficient-tiny-pii.json",
 }
 if os.path.exists("Results/eval_anon_llm.json"):
-    pareto_map["llama-70b"] = "Results/eval_anon_llm.json"
+    pareto_map[f"Qwen-32B"] = "Results/eval_anon_llm.json"
 
 all_eval = {}
 for name, path in pareto_map.items():
     d = load_json(path)
     if d:
-        all_eval[name] = {"elr": d.get("elr", 0), "bertscore": d.get("bertscore_f1", 0) or 0}
+        all_eval[name] = {"elr": d.get("elr", 0), "bertscore": d.get("bertscore_f1") or 0}
 
 save_json(all_eval, "results/all_eval_results.json")
 run("python -m analysis.pareto_frontier --results results/all_eval_results.json "
     "--output results/pareto_analysis.json --plot figures/pareto_frontier.png")
 
-# ┌──────────────────────────────────────────────────────────────────────┐
-# │  9. FIGURES                                                         │
-# └──────────────────────────────────────────────────────────────────────┘
-section("9. GENERATING FIGURES")
+
+# ╔══════════════════════════════════════════════════════════════════════╗
+# ║  8. PUBLICATION FIGURES                                             ║
+# ╚══════════════════════════════════════════════════════════════════════╝
+section(8, "FIGURES")
 
 run("python -m analysis.plot_results --results-dir results --eval-dir Results --output-dir figures")
-
-try:
-    from IPython.display import Image, display
-    for fig in ["pareto_frontier.png", "task2_comparison.png", "attack_heatmap.png",
-                "failure_taxonomy.png", "detection_recall.png"]:
-        if os.path.exists(f"figures/{fig}"):
-            display(Image(f"figures/{fig}"))
-except Exception:
-    log(f"Figures saved: {os.listdir('figures')}")
+log(f"Figures: {sorted(os.listdir('figures'))}")
 
 
-# ┌──────────────────────────────────────────────────────────────────────┐
-# │  10. FINAL RESULTS                                                  │
-# └──────────────────────────────────────────────────────────────────────┘
-section("10. FINAL RESULTS")
+# ╔══════════════════════════════════════════════════════════════════════╗
+# ║  9. RESULTS SUMMARY                                                 ║
+# ╚══════════════════════════════════════════════════════════════════════╝
+section(9, "RESULTS")
 
 # ── Task 2 ──
 print(f"\n  Task 2: Text Anonymization Quality")
 print("-" * 82)
 print(f"  {'System':20s} {'ELR↓':>7s} {'TokRec↑':>8s} {'OMR↓':>7s} {'FPR↑':>7s} {'BERT↑':>7s}")
 print("-" * 82)
-t2 = [("BART-base","eval_anon_bart-base-pii"), ("Flan-T5","eval_anon_flan-t5-small-pii"),
-      ("T5-small","eval_anon_t5-small-pii"), ("DistilBART","eval_anon_distilbart-pii"),
-      ("T5-eff-tiny","eval_anon_t5-efficient-tiny-pii"), ("Llama-70B (LLM)","eval_anon_llm"),
-      ("spaCy+Faker","eval_anon_spacy"), ("Presidio","eval_anon_presidio"),
-      ("Regex+Faker","eval_anon_regex")]
-for name, key in t2:
+
+t2_systems = [
+    ("BART-base",      "eval_anon_bart-base-pii"),
+    ("Flan-T5-small",  "eval_anon_flan-t5-small-pii"),
+    ("T5-small",       "eval_anon_t5-small-pii"),
+    ("DistilBART",     "eval_anon_distilbart-pii"),
+    ("T5-eff-tiny",    "eval_anon_t5-efficient-tiny-pii"),
+    ("Qwen-32B (LLM)", "eval_anon_llm"),
+    ("spaCy+Faker",    "eval_anon_spacy"),
+    ("Presidio",       "eval_anon_presidio"),
+    ("Regex+Faker",    "eval_anon_regex"),
+]
+for name, key in t2_systems:
     d = load_json(f"Results/{key}.json")
     if not d:
         continue
     bs = d.get("bertscore_f1") or 0
+    bs_s = f"{bs:6.2f}" if bs else "   N/A"
     print(f"  {name:20s} {d.get('elr',0):6.2f}% {d.get('token_recall',0):7.2f}% "
-          f"{d.get('over_masking_rate',0):6.2f}% {d.get('format_preservation_rate',0):6.2f}% "
-          f"{bs:6.2f}" if bs else
-          f"  {name:20s} {d.get('elr',0):6.2f}% {d.get('token_recall',0):7.2f}% "
-          f"{d.get('over_masking_rate',0):6.2f}% {d.get('format_preservation_rate',0):6.2f}%   N/A")
+          f"{d.get('over_masking_rate',0):6.2f}% {d.get('format_preservation_rate',0):6.2f}% {bs_s}")
 
 # ── Task 1 ──
 print(f"\n  Task 1: PII Detection")
@@ -265,29 +313,28 @@ for m in ["regex", "spacy", "presidio"]:
         print(f"  {m:20s} {d['exact']['f1']:9.2f}% {d['partial']['f1']:11.2f}% "
               f"{d['type_aware']['f1']:13.2f}%")
 
-# ── Task 3: Attack Matrix ──
+# ── Task 3 ──
 print(f"\n  Task 3: Privacy Under Attack")
 print("-" * 82)
-print(f"  {'System':20s} {'ELR':>7s} {'CRR-3':>7s} {'ERA@1':>7s} {'ERA@5':>7s} {'UAC':>7s} {'LRR':>7s}")
+print(f"  {'System':20s} {'CRR-3↓':>7s} {'ERA@1↓':>7s} {'ERA@5↓':>7s} {'UAC↓':>7s} {'LRR-exact↓':>11s} {'LRR-fuzzy↓':>11s}")
 print("-" * 82)
 
-for label, priv_f, anon_f, lrr_f in [
-    ("BART-base",  "eval_privacy_bart.json",     "eval_anon_bart-base-pii.json",  "eval_privacy_bart_lrr.json"),
-    ("Presidio",   "eval_privacy_presidio.json",  "eval_anon_presidio.json",       "eval_privacy_presidio_lrr.json"),
+for label, priv_f, lrr_f in [
+    ("BART-base",  "eval_privacy_bart.json",      "eval_privacy_bart_lrr.json"),
+    ("Presidio",   "eval_privacy_presidio.json",   "eval_privacy_presidio_lrr.json"),
 ]:
     priv = load_json(f"results/{priv_f}")
-    anon = load_json(f"Results/{anon_f}")
     if not priv:
         continue
     era = priv.get("era") or {}
-    lrr_val = "N/A"
     lrr_data = load_json(f"results/{lrr_f}")
-    if lrr_data:
-        li = lrr_data.get("lrr") or {}
-        lrr_val = f"{li.get('lrr_exact', 0):.2f}%"
-    print(f"  {label:20s} {(anon or {}).get('elr',0):6.2f}% {priv.get('crr3',0):6.2f}% "
-          f"{era.get('era_top1',0):6.2f}% {era.get('era_top5',0):6.2f}% "
-          f"{priv.get('uac',0):6.2f}% {lrr_val:>7s}")
+    lrr_exact, lrr_fuzzy = "N/A", "N/A"
+    if lrr_data and lrr_data.get("lrr"):
+        li = lrr_data["lrr"]
+        lrr_exact = f"{li.get('lrr_exact', 0):.2f}%"
+        lrr_fuzzy = f"{li.get('lrr_fuzzy', 0):.2f}%"
+    print(f"  {label:20s} {priv.get('crr3',0):6.2f}% {era.get('era_top1',0):6.2f}% "
+          f"{era.get('era_top5',0):6.2f}% {priv.get('uac',0):6.2f}% {lrr_exact:>11s} {lrr_fuzzy:>11s}")
 
 # ── Failure Taxonomy ──
 print(f"\n  Failure Taxonomy")
@@ -313,64 +360,51 @@ for name in ["bart-base-pii", "spacy", "presidio", "regex"]:
 # ── Pareto ──
 pareto = load_json("results/pareto_analysis.json")
 if pareto:
-    print(f"\n  Pareto-optimal: {pareto['pareto_optimal']}")
+    print(f"\n  Pareto-optimal systems: {pareto.get('pareto_optimal', [])}")
+
 
 # ── Key Findings ──
 print(f"\n{'='*82}")
 print("  KEY FINDINGS")
 print("="*82)
-print("""
+print(f"""
   1. Seq2seq Pareto-dominates rule-based on BOTH privacy and utility.
-     BART: 0.93% ELR / 92.74 BERTScore vs Presidio: 33.77% / 90.04.
+     BART: ~0.93% ELR / 92.74 BERT vs Presidio: ~33.77% / 90.04.
 
-  2. ERA (retrieval) > LRR (generative) as attack vector.
-     ERA@1 recovers more entities than Llama 70B can guess from context.
+  2. ERA (retrieval) > LRR (generative LLM attack).
+     Embedding retrieval recovers more entities than a 32B LLM can guess.
 
-  3. Rule-based systems are 10x more vulnerable to privacy attacks.
-     Presidio ERA@1 ≈ 20% vs BART ERA@1 ≈ 2%.
+  3. Rule-based systems are ~10x more vulnerable to privacy attacks.
+     Presidio ERA@1 ~ 20% vs BART ERA@1 ~ 2%.
 
   4. Detection quality is the bottleneck for anonymization quality.
-     Regex F1=26% → ELR=83%; spaCy F1=56% → ELR=26%.
+     Low detection F1 → high entity leakage.
 
   5. Context retention ≠ privacy failure.
-     35% "ghost leak" rate in seq2seq = faithful text preservation.
+     ~35% "ghost leak" in seq2seq = faithful non-PII text preservation.
+
+  LRR adversary model: {LLM_MODEL}
 """)
 
-# ── Files ──
-print(f"{'='*82}")
-print("  OUTPUT FILES")
-print("="*82)
-for d in ["Results", "results", "figures"]:
-    if os.path.exists(d):
-        for fn in sorted(os.listdir(d)):
-            fp = os.path.join(d, fn)
-            print(f"  {fp:52s} {os.path.getsize(fp):>8,} bytes")
 
-
-# ┌──────────────────────────────────────────────────────────────────────┐
-# │  11. DOWNLOAD                                                       │
-# └──────────────────────────────────────────────────────────────────────┘
-section("11. PACKAGING RESULTS")
+# ╔══════════════════════════════════════════════════════════════════════╗
+# ║  10. PACKAGE OUTPUT                                                 ║
+# ╚══════════════════════════════════════════════════════════════════════╝
+section(10, "PACKAGING")
 
 for f in os.listdir("Results"):
     shutil.copy2(f"Results/{f}", f"results/{f}")
 
-out = "/kaggle/working" if os.path.exists("/kaggle/working") else \
-      "/content" if os.path.exists("/content") else "."
+shutil.make_archive("saha_al_final", "zip", ".", "results")
+log(f"Archive: {os.path.abspath('saha_al_final.zip')}")
 
-out_dir = f"{out}/saha_al_output"
-os.makedirs(f"{out_dir}/results", exist_ok=True)
-os.makedirs(f"{out_dir}/figures", exist_ok=True)
-for f in os.listdir("results"):
-    shutil.copy2(f"results/{f}", f"{out_dir}/results/{f}")
-for f in os.listdir("figures"):
-    shutil.copy2(f"figures/{f}", f"{out_dir}/figures/{f}")
+# Also list all output files
+print(f"\n  Output files:")
+for d in ["Results", "results", "figures"]:
+    if os.path.exists(d):
+        for fn in sorted(os.listdir(d)):
+            fp = os.path.join(d, fn)
+            print(f"    {fp:52s} {os.path.getsize(fp):>8,} bytes")
 
-shutil.make_archive(f"{out}/saha_al_final", "zip", out_dir)
-log(f"DONE. Download: {out}/saha_al_final.zip")
-
-try:
-    from google.colab import files
-    files.download(f"{out}/saha_al_final.zip")
-except Exception:
-    pass
+elapsed = time.time() - _T0
+log(f"DONE in {elapsed/60:.1f} min")

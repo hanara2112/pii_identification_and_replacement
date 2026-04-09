@@ -31,20 +31,29 @@ Text: {text}
 Anonymized text:"""
 
 
+def _is_prequantized(model_name):
+    tag = model_name.lower()
+    return any(q in tag for q in ("awq", "gptq", "gguf"))
+
+
 def _load_local_model(model_name):
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     print(f"Loading local model {model_name}...")
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    load_kwargs = {"device_map": "auto"}
-    if torch.cuda.is_available():
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    load_kwargs = {"device_map": "auto", "trust_remote_code": True}
+
+    if _is_prequantized(model_name):
+        print("Pre-quantized model detected (AWQ/GPTQ) — loading directly")
+        load_kwargs["torch_dtype"] = torch.float16
+    elif torch.cuda.is_available():
         try:
             from transformers import BitsAndBytesConfig
             load_kwargs["quantization_config"] = BitsAndBytesConfig(
                 load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16
             )
-            print("Using 4-bit quantization")
+            print("Using bitsandbytes 4-bit quantization")
         except (ImportError, Exception):
             load_kwargs["torch_dtype"] = torch.float16
 
@@ -107,8 +116,9 @@ def main():
     parser.add_argument("--output", required=True, help="Output predictions JSONL")
     parser.add_argument("--model", default="gpt-4o-mini", help="API model name")
     parser.add_argument("--local", action="store_true", help="Use local HuggingFace model")
-    parser.add_argument("--local-model", default="Qwen/Qwen2.5-7B-Instruct",
-                        help="HuggingFace model ID for local inference")
+    parser.add_argument("--local-model", default="Qwen/Qwen2.5-72B-Instruct-AWQ",
+                        help="HuggingFace model ID for local inference "
+                             "(use AWQ/GPTQ variants to avoid downloading full FP16 weights)")
     parser.add_argument("--sample", type=int, default=None,
                         help="Only process first N records (for cost/time control)")
     parser.add_argument("--delay", type=float, default=0,
