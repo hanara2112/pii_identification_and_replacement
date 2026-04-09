@@ -227,6 +227,8 @@ def main():
     parser.add_argument("--output", default=None, help="Output JSON")
     parser.add_argument("--skip-era", action="store_true")
     parser.add_argument("--skip-lrr", action="store_true")
+    parser.add_argument("--era-sample", type=int, default=0,
+                        help="Limit ERA to first N records (0 = all)")
     parser.add_argument("--lrr-sample", type=int, default=300)
     args = parser.parse_args()
 
@@ -239,7 +241,9 @@ def main():
     print(f"Evaluating privacy on {len(preds)} records...")
 
     crr = crr3(gold, preds)
-    era = None if args.skip_era else entity_recovery_attack(gold, preds, train_records)
+    era_gold = gold[:args.era_sample] if args.era_sample > 0 else gold
+    era_pred = preds[:args.era_sample] if args.era_sample > 0 else preds
+    era = None if args.skip_era else entity_recovery_attack(era_gold, era_pred, train_records)
     lrr = None if args.skip_lrr else llm_reidentification_rate(gold, preds, sample_n=args.lrr_sample)
     uac = unique_attribute_combination_rate(gold, preds)
 
