@@ -151,37 +151,98 @@ REPLACEMENT -> YOUR_GUESS
 Only output guesses, nothing else."""
 
 
-def llm_reidentification_rate(gold_records, predictions, sample_n=300, model="gpt-4o-mini"):
+def _load_local_llm(model_name):
+    """Load a local HuggingFace model for LRR (no API key needed)."""
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    print(f"  LRR: Loading local model {model_name}...")
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+        device_map="auto",
+    )
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    return model, tokenizer
+
+
+def _generate_local(model, tokenizer, prompt, max_new_tokens=256):
+    """Generate text from a local model."""
+    import torch
+    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512)
+    inputs = {k: v.to(model.device) for k, v in inputs.items()}
+    with torch.no_grad():
+        outputs = model.generate(
+            **inputs, max_new_tokens=max_new_tokens,
+            temperature=0.1, do_sample=True, top_p=0.9,
+            pad_token_id=tokenizer.pad_token_id,
+        )
+    new_tokens = outputs[0][inputs["input_ids"].shape[1]:]
+    return tokenizer.decode(new_tokens, skip_special_tokens=True)
+
+
+def llm_reidentification_rate(gold_records, predictions, sample_n=300,
+                              model_name="gpt-4o-mini", use_local=False,
+                              local_model_name="Qwen/Qwen2.5-1.5B-Instruct"):
     """
     Prompt an LLM to recover original entities from anonymized text.
     Measures exact match rate and fuzzy match rate (>0.8 char similarity).
+
+    Args:
+        use_local: If True, uses a local HuggingFace model instead of OpenAI API.
+        local_model_name: HuggingFace model ID for local inference.
+            Good options for Kaggle GPU:
+              - "Qwen/Qwen2.5-1.5B-Instruct" (~3GB, fast)
+              - "microsoft/Phi-3.5-mini-instruct" (~7GB, stronger)
+              - "google/gemma-2-2b-it" (~5GB, good balance)
     """
-    try:
-        from openai import OpenAI
-    except ImportError:
-        print("[WARN] openai not installed. Skipping LRR. pip install openai")
-        return None
+    local_model, local_tokenizer = None, None
 
-    client = OpenAI()
+    if use_local:
+        try:
+            local_model, local_tokenizer = _load_local_llm(local_model_name)
+        except Exception as e:
+            print(f"[WARN] Failed to load local model: {e}")
+            return None
+    else:
+        try:
+            from openai import OpenAI
+            client = OpenAI()
+        except ImportError:
+            print("[WARN] openai not installed. Use --lrr-local for local model. Skipping LRR.")
+            return None
+
     exact, fuzzy, total = 0, 0, 0
+    api_failures = 0
 
-    for g, p in zip(gold_records[:sample_n], predictions[:sample_n]):
+    for idx, (g, p) in enumerate(zip(gold_records[:sample_n], predictions[:sample_n])):
         original_entities = {e["text"] for e in g.get("entities", []) if e.get("text")}
         if not original_entities:
             continue
 
+        prompt_text = LRR_PROMPT.format(anonymized_text=p["anonymized_text"])
+
         try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": LRR_PROMPT.format(anonymized_text=p["anonymized_text"])}],
-                temperature=0,
-                max_tokens=512,
-            )
-            guesses_raw = response.choices[0].message.content.strip().split("\n")
+            if use_local:
+                raw_output = _generate_local(local_model, local_tokenizer, prompt_text)
+            else:
+                response = client.chat.completions.create(
+                    model=model_name,
+                    messages=[{"role": "user", "content": prompt_text}],
+                    temperature=0, max_tokens=512,
+                )
+                raw_output = response.choices[0].message.content.strip()
         except Exception as e:
-            print(f"[WARN] LRR API call failed: {e}")
+            api_failures += 1
+            if api_failures <= 3:
+                print(f"[WARN] LRR call failed: {e}")
+            if api_failures == 3:
+                print("[WARN] Suppressing further warnings...")
             continue
 
+        guesses_raw = raw_output.split("\n")
         parsed_guesses = set()
         for line in guesses_raw:
             if "->" in line:
@@ -197,11 +258,20 @@ def llm_reidentification_rate(gold_records, predictions, sample_n=300, model="gp
             ):
                 fuzzy += 1
 
+        if (idx + 1) % 50 == 0:
+            print(f"  LRR: {idx+1}/{min(sample_n, len(gold_records))} records "
+                  f"(exact={exact}, fuzzy={fuzzy}, total={total})")
+
+    if api_failures > 0:
+        print(f"  LRR: {api_failures} API calls failed out of {idx+1} attempted")
+
     return {
         "lrr_exact": round(exact / total * 100, 2) if total else 0,
         "lrr_fuzzy": round((exact + fuzzy) / total * 100, 2) if total else 0,
         "total_evaluated": total,
         "sample_n": sample_n,
+        "model": local_model_name if use_local else model_name,
+        "api_failures": api_failures,
     }
 
 
@@ -262,6 +332,10 @@ def main():
     parser.add_argument("--era-sample", type=int, default=0,
                         help="Limit ERA to first N records (0 = all)")
     parser.add_argument("--lrr-sample", type=int, default=300)
+    parser.add_argument("--lrr-local", action="store_true",
+                        help="Use a local HuggingFace model instead of OpenAI API")
+    parser.add_argument("--lrr-model", type=str, default="Qwen/Qwen2.5-1.5B-Instruct",
+                        help="Local model name (default: Qwen/Qwen2.5-1.5B-Instruct)")
     args = parser.parse_args()
 
     gold = load_jsonl(args.gold)
@@ -276,7 +350,10 @@ def main():
     era_gold = gold[:args.era_sample] if args.era_sample > 0 else gold
     era_pred = preds[:args.era_sample] if args.era_sample > 0 else preds
     era = None if args.skip_era else entity_recovery_attack(era_gold, era_pred, train_records)
-    lrr = None if args.skip_lrr else llm_reidentification_rate(gold, preds, sample_n=args.lrr_sample)
+    lrr = None if args.skip_lrr else llm_reidentification_rate(
+        gold, preds, sample_n=args.lrr_sample,
+        use_local=args.lrr_local, local_model_name=args.lrr_model,
+    )
     uac = unique_attribute_combination_rate(gold, preds)
 
     results = {"crr3": crr, "era": era, "lrr": lrr, "uac": uac}
