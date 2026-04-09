@@ -167,7 +167,7 @@ def _load_local_llm(model_name):
     load_kwargs = {"device_map": "auto", "trust_remote_code": True}
     if _is_prequantized(model_name):
         print("  LRR: Pre-quantized model detected (AWQ/GPTQ) — loading directly")
-        load_kwargs["torch_dtype"] = torch.float16
+        load_kwargs["dtype"] = torch.float16
     elif torch.cuda.is_available():
         try:
             from transformers import BitsAndBytesConfig

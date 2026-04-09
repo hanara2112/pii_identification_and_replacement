@@ -238,7 +238,10 @@ def plot_detection_recall(results_dir, output_path):
     data = np.zeros((len(sys_names), len(types)))
     for i, ptr in enumerate(type_recalls):
         for j, t in enumerate(types):
-            data[i, j] = ptr.get(t, 0)
+            val = ptr.get(t, 0)
+            if isinstance(val, dict):
+                val = val.get("recall", 0)
+            data[i, j] = val
 
     fig, ax = plt.subplots(figsize=(10, max(3, len(sys_names) * 0.8 + 1)))
     im = ax.imshow(data, cmap="RdYlGn", aspect="auto", vmin=0, vmax=100)

@@ -78,9 +78,14 @@ def patch_bert(json_path, key):
 
 
 # ╔══════════════════════════════════════════════════════════════════════╗
-# ║  0. SANITY CHECKS                                                  ║
+# ║  0. INSTALL DEPS + SANITY CHECKS                                   ║
 # ╚══════════════════════════════════════════════════════════════════════╝
-section(0, "ENVIRONMENT CHECK")
+section(0, "DEPS + ENVIRONMENT CHECK")
+
+run("pip install -q --upgrade Pillow")
+run("pip install -q sentence-transformers faker bert_score spacy "
+    "presidio-analyzer presidio-anonymizer bitsandbytes accelerate autoawq")
+run("python -m spacy download en_core_web_lg -q 2>/dev/null || true")
 
 import torch
 if torch.cuda.is_available():
