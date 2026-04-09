@@ -68,50 +68,122 @@ def sweep_pus(results_dict: dict, lambdas=None):
 def plot_frontier(results_dict, pareto_models, output_path):
     """Generate a matplotlib scatter plot with Pareto frontier."""
     try:
+        import matplotlib
+        matplotlib.use("Agg")
         import matplotlib.pyplot as plt
+        from matplotlib.patches import FancyArrowPatch
     except ImportError:
         print("[WARN] matplotlib not installed. Skipping plot.")
         return
 
-    fig, ax = plt.subplots(1, 1, figsize=(10, 7))
+    SYSTEM_STYLES = {
+        "regex":        {"label": "Regex+Faker",     "group": "rule"},
+        "spacy":        {"label": "spaCy+Faker",     "group": "rule"},
+        "presidio":     {"label": "Presidio",        "group": "rule"},
+        "bart-base":    {"label": "BART-base",       "group": "seq2seq"},
+        "flan-t5-small":{"label": "Flan-T5-small",   "group": "seq2seq"},
+        "t5-small":     {"label": "T5-small",        "group": "seq2seq"},
+        "distilbart":   {"label": "DistilBART",      "group": "seq2seq"},
+        "t5-eff-tiny":  {"label": "T5-eff-tiny",     "group": "seq2seq"},
+    }
+    GROUP_COLORS = {"rule": "#E07B39", "seq2seq": "#3B7DD8"}
+    GROUP_MARKERS = {"rule": "s", "seq2seq": "o"}
 
+    fig, ax = plt.subplots(1, 1, figsize=(11, 7.5))
+
+    points = {}
     for name, r in results_dict.items():
         x = 1 - r["elr"] / 100
         y = r["bertscore"] / 100
-        color = "red" if name in pareto_models else "steelblue"
-        marker = "*" if name in pareto_models else "o"
-        size = 150 if name in pareto_models else 80
-        ax.scatter(x, y, c=color, s=size, marker=marker, zorder=5)
-        ax.annotate(name, (x, y), textcoords="offset points",
-                    xytext=(5, 5), fontsize=7, alpha=0.8)
+        points[name] = (x, y)
+
+    # Manually resolve label offsets to avoid overlap
+    label_offsets = {}
+    sorted_names = sorted(points.keys(), key=lambda n: (-points[n][0], -points[n][1]))
+    used_positions = []
+    for name in sorted_names:
+        x, y = points[name]
+        ox, oy = 8, 8
+        for ux, uy in used_positions:
+            if abs(x - ux) < 0.04 and abs(y - uy) < 0.015:
+                oy -= 18
+        label_offsets[name] = (ox, oy)
+        used_positions.append((x, y))
+
+    for name, (x, y) in points.items():
+        style = SYSTEM_STYLES.get(name, {"label": name, "group": "seq2seq"})
+        group = style["group"]
+        is_pareto = name in pareto_models
+
+        color = "#CC2936" if is_pareto else GROUP_COLORS.get(group, "#3B7DD8")
+        marker = "*" if is_pareto else GROUP_MARKERS.get(group, "o")
+        size = 280 if is_pareto else 120
+        edge = "black" if is_pareto else "white"
+
+        ax.scatter(x, y, c=color, s=size, marker=marker, zorder=6,
+                   edgecolors=edge, linewidths=0.8)
+
+        ox, oy = label_offsets.get(name, (8, 8))
+        ax.annotate(
+            style["label"], (x, y),
+            textcoords="offset points", xytext=(ox, oy),
+            fontsize=9, fontweight="bold" if is_pareto else "normal",
+            color=color, alpha=0.95,
+            arrowprops=dict(arrowstyle="-", color="gray", alpha=0.3, lw=0.5)
+            if abs(ox) > 8 or abs(oy) > 12 else None,
+        )
 
     pareto_points = sorted(
-        [(1 - results_dict[m]["elr"] / 100, results_dict[m]["bertscore"] / 100) for m in pareto_models],
+        [(points[m][0], points[m][1]) for m in pareto_models],
         key=lambda p: p[0],
     )
     if len(pareto_points) > 1:
         px, py = zip(*pareto_points)
-        ax.plot(px, py, "r--", alpha=0.5, linewidth=1.5, label="Pareto frontier")
+        ax.plot(px, py, color="#CC2936", linestyle="--", alpha=0.6,
+                linewidth=2, label="Pareto frontier", zorder=4)
+    elif len(pareto_points) == 1:
+        ax.scatter([], [], c="#CC2936", marker="*", s=200, label="Pareto-optimal")
 
     for lam in [0.3, 0.5, 0.7]:
-        xs = np.linspace(0, 1, 100)
-        for target_pus in [0.7, 0.8, 0.9]:
-            ys = (target_pus - lam * xs) / (1 - lam) if lam < 1 else None
-            if ys is not None:
-                valid = (ys >= 0) & (ys <= 1)
-                ax.plot(xs[valid], ys[valid], ":", alpha=0.15, color="gray")
+        xs = np.linspace(0, 1, 200)
+        for target_pus in [0.85, 0.90, 0.95]:
+            ys = (target_pus - lam * xs) / (1 - lam)
+            valid = (ys >= 0.5) & (ys <= 1.05)
+            ax.plot(xs[valid], ys[valid], ":", alpha=0.1, color="gray", linewidth=0.8)
 
-    ax.set_xlabel("Privacy (1 − ELR)", fontsize=12)
-    ax.set_ylabel("Utility (BERTScore F1 / 100)", fontsize=12)
-    ax.set_title("Privacy-Utility Pareto Frontier", fontsize=14)
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    ax.set_xlim(-0.05, 1.05)
-    ax.set_ylim(0.5, 1.05)
+    ax.annotate("← Lower Privacy", xy=(0.15, 0.52), fontsize=8,
+                color="gray", alpha=0.6)
+    ax.annotate("Higher Privacy →", xy=(0.82, 0.52), fontsize=8,
+                color="gray", alpha=0.6)
+    ax.annotate("Higher\nUtility ↑", xy=(0.01, 0.96), fontsize=8,
+                color="gray", alpha=0.6)
+
+    from matplotlib.lines import Line2D
+    legend_elements = [
+        Line2D([0], [0], marker="s", color="w", markerfacecolor=GROUP_COLORS["rule"],
+               markersize=10, label="Rule-based"),
+        Line2D([0], [0], marker="o", color="w", markerfacecolor=GROUP_COLORS["seq2seq"],
+               markersize=10, label="Seq2Seq"),
+        Line2D([0], [0], marker="*", color="w", markerfacecolor="#CC2936",
+               markersize=14, label="Pareto-optimal"),
+        Line2D([0], [0], color="#CC2936", linestyle="--", linewidth=2,
+               alpha=0.6, label="Pareto frontier"),
+    ]
+    ax.legend(handles=legend_elements, loc="lower left", fontsize=10,
+              framealpha=0.9, edgecolor="lightgray")
+
+    ax.set_xlabel("Privacy  (1 − ELR)", fontsize=13, labelpad=8)
+    ax.set_ylabel("Utility  (BERTScore F1 / 100)", fontsize=13, labelpad=8)
+    ax.set_title("Privacy–Utility Pareto Frontier", fontsize=15, fontweight="bold", pad=12)
+    ax.grid(True, alpha=0.2, linestyle="-", linewidth=0.5)
+    ax.set_xlim(-0.05, 1.08)
+    ax.set_ylim(0.50, 1.02)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150)
+    fig.savefig(output_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
     print(f"Plot saved to {output_path}")
 
