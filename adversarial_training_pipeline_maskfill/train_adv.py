@@ -37,6 +37,7 @@ import gc
 import json
 import logging
 import os
+import random
 import sys
 import time
 from datetime import datetime
@@ -80,6 +81,18 @@ parser.add_argument("--combo", type=int, choices=[1, 2], default=2,
 parser.add_argument("--ckpt_dir", default=None, help="Override checkpoint directory")
 parser.add_argument("--kaggle", action="store_true",
                     help="Use /kaggle/working/ as checkpoint dir (Kaggle runs)")
+parser.add_argument("--max_train_samples", type=int, default=None,
+                    help="Cap training JSONL size (shuffle+slice; default: use all)")
+parser.add_argument("--max_eval_samples", type=int, default=None,
+                    help="Cap eval JSONL for faster val loops (default: use all)")
+parser.add_argument("--epochs", type=int, default=None,
+                    help="Override config NUM_EPOCHS (default: from config.py)")
+parser.add_argument("--seed", type=int, default=42,
+                    help="RNG seed for subsampling shuffle (default: 42)")
+parser.add_argument("--batch_size", type=int, default=None,
+                    help="Override per-step batch size (default: combo-specific in config)")
+parser.add_argument("--grad_accum", type=int, default=None,
+                    help="Override gradient accumulation steps (default: config)")
 args = parser.parse_args()
 
 COMBO = args.combo
@@ -107,6 +120,11 @@ else:
     GRAD_ACCUM       = COMBO2_GRAD_ACCUM_STEPS
     LEARNING_RATE    = COMBO2_LEARNING_RATE
     WARMUP_STEPS     = COMBO2_WARMUP_STEPS
+
+if args.batch_size is not None:
+    BATCH_SIZE = args.batch_size
+if args.grad_accum is not None:
+    GRAD_ACCUM = args.grad_accum
 
 # ── Logging ────────────────────────────────────────────────────────────────
 os.makedirs(LOGS_DIR, exist_ok=True)
@@ -459,6 +477,17 @@ def train():
     logger.info("Loading adversarial pairs …")
     train_data = load_jsonl(ADV_TRAIN_FILE)
     eval_data  = load_jsonl(ADV_EVAL_FILE)
+
+    rng = random.Random(args.seed)
+    if args.max_train_samples is not None and args.max_train_samples < len(train_data):
+        rng.shuffle(train_data)
+        train_data = train_data[: args.max_train_samples]
+        logger.info("  Subsampled train → %d rows (seed=%d)", len(train_data), args.seed)
+    if args.max_eval_samples is not None and args.max_eval_samples < len(eval_data):
+        rng.shuffle(eval_data)
+        eval_data = eval_data[: args.max_eval_samples]
+        logger.info("  Subsampled eval → %d rows", len(eval_data))
+
     logger.info("  Train: %d | Eval: %d", len(train_data), len(eval_data))
 
     train_ds = PipelineAdvDataset(
@@ -479,12 +508,14 @@ def train():
         collate_fn=pipeline_adv_collate_fn,
     )
 
+    num_epochs = args.epochs if args.epochs is not None else NUM_EPOCHS
+
     iters_per_epoch = len(train_loader)
     opt_steps_epoch = max(1, iters_per_epoch // GRAD_ACCUM)
-    total_steps     = opt_steps_epoch * NUM_EPOCHS
+    total_steps     = opt_steps_epoch * num_epochs
     logger.info(
-        "  Iters/epoch: %d | Opt steps/epoch: %d | Total: %d | Eff batch: %d",
-        iters_per_epoch, opt_steps_epoch, total_steps, BATCH_SIZE * GRAD_ACCUM,
+        "  Iters/epoch: %d | Opt steps/epoch: %d | Total: %d | Eff batch: %d | Epochs: %d",
+        iters_per_epoch, opt_steps_epoch, total_steps, BATCH_SIZE * GRAD_ACCUM, num_epochs,
     )
 
     # -- 3. Optimizer & scheduler --------------------------------------------
@@ -526,8 +557,8 @@ def train():
     compute_fn    = compute_combo2_losses if COMBO == 2 else compute_combo1_losses
 
     # -- 5. Training loop  ---------------------------------------------------
-    for epoch in range(start_epoch, NUM_EPOCHS):
-        logger.info("\n── Epoch %d/%d ──", epoch + 1, NUM_EPOCHS)
+    for epoch in range(start_epoch, num_epochs):
+        logger.info("\n── Epoch %d/%d ──", epoch + 1, num_epochs)
         filler.train()
         optimizer.zero_grad()
 
