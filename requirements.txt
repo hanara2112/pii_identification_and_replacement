@@ -1,7 +1,12 @@
 # PII identification & replacement — Python 3.10+ recommended
 #
-# PyTorch: for CUDA or a specific build, follow https://pytorch.org/get-started/locally/
-# then install the rest: pip install -r requirements.txt
+# PyTorch:
+#   • One-shot (CPU / many laptops):  pip install -r requirements.txt
+#   • GPU servers (Lambda, etc.):     install CUDA torch FIRST, then:
+#                                      pip install -r requirements-no-torch.txt
+#     Example CUDA 12.4 wheels:
+#       pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+#     If that fails, try cu121:  .../whl/cu121  (match https://pytorch.org/get-started/locally/)
 #
 # --- Core (transformers, Hub, training, adversarial pipelines) ---
 torch>=2.1.0

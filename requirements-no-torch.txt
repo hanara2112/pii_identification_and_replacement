@@ -1,0 +1,25 @@
+# Use after installing PyTorch for your CUDA version (see requirements.txt header).
+# Same as requirements.txt but without torch — avoids pip swapping a CUDA wheel for a CPU one.
+
+transformers>=4.40.0
+datasets>=2.16.0
+huggingface_hub>=0.23.0
+accelerate>=0.27.0
+safetensors>=0.4.0
+sentencepiece>=0.1.99
+protobuf>=3.20.3,<6
+numpy>=1.24.0,<3
+tqdm>=4.65.0
+peft>=0.10.0
+bitsandbytes>=0.43.0; platform_system != "Darwin"
+evaluate>=0.4.0
+seqeval>=1.2.0
+rouge-score>=0.1.2
+sacrebleu>=2.3.0
+bert-score>=0.3.13
+matplotlib>=3.7.0
+pandas>=2.0.0
+streamlit>=1.28.0
+Faker>=20.0.0
+google-genai>=1.0.0
+python-dotenv>=1.0.0
