@@ -183,7 +183,7 @@ def load_ner_masker():
 def run_ner_mask(texts: list[str], ner_model, ner_tok) -> list[str]:
     """Run RoBERTa NER masker to get masked texts (one [MASK] per entity span)."""
     masked = []
-    for text in texts:
+    for text in tqdm(texts, desc="NER masker (per doc)", unit="doc", leave=False):
         words = text.split()
         enc = ner_tok(
             words,
@@ -231,9 +231,10 @@ def run_ner_mask(texts: list[str], ner_model, ner_tok) -> list[str]:
 
 @torch.no_grad()
 def run_filler_combo2(masked_texts: list[str], filler, filler_tok,
-                      batch_size=16, num_beams=4) -> list[str]:
+                      batch_size=16, num_beams=4, pbar_desc: str = "BART filler") -> list[str]:
     outputs = []
-    for i in range(0, len(masked_texts), batch_size):
+    idxs = range(0, len(masked_texts), batch_size)
+    for i in tqdm(idxs, desc=pbar_desc, unit="batch", leave=False):
         batch = masked_texts[i: i + batch_size]
         enc = filler_tok(batch, return_tensors="pt", padding=True,
                          truncation=True, max_length=MAX_INPUT_LENGTH).to(DEVICE)
@@ -249,11 +250,12 @@ def run_filler_combo2(masked_texts: list[str], filler, filler_tok,
 
 @torch.no_grad()
 def run_filler_combo1(masked_texts: list[str], filler, filler_tok,
-                      batch_size=16) -> list[str]:
+                      batch_size=16, pbar_desc: str = "DeBERTa MLM") -> list[str]:
     """DeBERTa-MLM: predict top-1 token at each [MASK] position."""
     outputs = []
     mask_id = filler_tok.mask_token_id
-    for i in range(0, len(masked_texts), batch_size):
+    idxs = range(0, len(masked_texts), batch_size)
+    for i in tqdm(idxs, desc=pbar_desc, unit="batch", leave=False):
         batch = masked_texts[i: i + batch_size]
         enc = filler_tok(batch, return_tensors="pt", padding=True,
                          truncation=True, max_length=MAX_INPUT_LENGTH).to(DEVICE)
@@ -273,9 +275,10 @@ def run_filler_combo1(masked_texts: list[str], filler, filler_tok,
 
 @torch.no_grad()
 def run_inverter(anonymized_texts: list[str], inverter, inverter_tok,
-                 batch_size=16, num_beams=4) -> list[str]:
+                 batch_size=16, num_beams=4, pbar_desc: str = "Inverter") -> list[str]:
     outputs = []
-    for i in range(0, len(anonymized_texts), batch_size):
+    idxs = range(0, len(anonymized_texts), batch_size)
+    for i in tqdm(idxs, desc=pbar_desc, unit="batch", leave=False):
         batch = anonymized_texts[i: i + batch_size]
         enc = inverter_tok(batch, return_tensors="pt", padding=True,
                            truncation=True, max_length=MAX_INPUT_LENGTH).to(DEVICE)
@@ -317,12 +320,19 @@ def main():
 
     # ── Part A: Quality on gold eval set ────────────────────────────────────
     print("\n── Part A: Anonymization Quality (pre-computed masked forms) ──")
+    print("  (Beam search is slow; progress bars count batches.)", flush=True)
     if COMBO == 2:
-        preds_A = run_filler_combo2(masked_texts, filler, filler_tok,
-                                    batch_size=args.batch, num_beams=args.beams)
+        preds_A = run_filler_combo2(
+            masked_texts, filler, filler_tok,
+            batch_size=args.batch, num_beams=args.beams,
+            pbar_desc="Part A: BART filler (beam)",
+        )
     else:
-        preds_A = run_filler_combo1(masked_texts, filler, filler_tok,
-                                    batch_size=args.batch)
+        preds_A = run_filler_combo1(
+            masked_texts, filler, filler_tok,
+            batch_size=args.batch,
+            pbar_desc="Part A: DeBERTa MLM",
+        )
 
     elr_A    = entity_leakage_rate(preds_A, entity_lists)
     bleu4_A  = round(sum(sentence_bleu(p, r) for p, r in zip(preds_A, gold_anon))
@@ -340,15 +350,24 @@ def main():
 
     print("  Step 2: Hardened filler …")
     if COMBO == 2:
-        anon_B = run_filler_combo2(masked_live, filler, filler_tok,
-                                    batch_size=args.batch, num_beams=args.beams)
+        anon_B = run_filler_combo2(
+            masked_live, filler, filler_tok,
+            batch_size=args.batch, num_beams=args.beams,
+            pbar_desc="Part B: BART filler (beam)",
+        )
     else:
-        anon_B = run_filler_combo1(masked_live, filler, filler_tok,
-                                    batch_size=args.batch)
+        anon_B = run_filler_combo1(
+            masked_live, filler, filler_tok,
+            batch_size=args.batch,
+            pbar_desc="Part B: DeBERTa MLM",
+        )
 
     print("  Step 3: Frozen inverter on hardened output …")
-    inv_preds = run_inverter(anon_B, inverter, inverter_tok,
-                             batch_size=args.batch, num_beams=args.beams)
+    inv_preds = run_inverter(
+        anon_B, inverter, inverter_tok,
+        batch_size=args.batch, num_beams=args.beams,
+        pbar_desc="Part B: inverter (beam)",
+    )
 
     err_B   = entity_recovery_rate(inv_preds, originals)
     elr_B   = entity_leakage_rate(anon_B, entity_lists)
