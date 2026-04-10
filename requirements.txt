@@ -1,5 +1,48 @@
-datasets
-transformers
-google-generativeai
-tqdm
-python-dotenv
+# PII identification & replacement — Python 3.10+ recommended
+#
+# PyTorch: for CUDA or a specific build, follow https://pytorch.org/get-started/locally/
+# then install the rest: pip install -r requirements.txt
+#
+# --- Core (transformers, Hub, training, adversarial pipelines) ---
+torch>=2.1.0
+transformers>=4.40.0
+datasets>=2.16.0
+huggingface_hub>=0.23.0
+accelerate>=0.27.0
+safetensors>=0.4.0
+sentencepiece>=0.1.99
+protobuf>=3.20.3,<6
+numpy>=1.24.0,<3
+tqdm>=4.65.0
+
+# LoRA / efficient fine-tuning (e.g. pipeline_maskfill/filler.py)
+peft>=0.10.0
+
+# 4-bit / quantized models (Linux + NVIDIA typical; skip on Mac if install fails)
+bitsandbytes>=0.43.0; platform_system != "Darwin"
+
+# Hugging Face metrics loaders + NER span metrics (evaluate.py, kaggle_evaluation, tab-finetuning)
+evaluate>=0.4.0
+seqeval>=1.2.0
+rouge-score>=0.1.2
+sacrebleu>=2.3.0
+bert-score>=0.3.13
+
+# Plots (benchmark/analysis)
+matplotlib>=3.7.0
+
+# SAHA-AL Streamlit UI + tabular helpers
+pandas>=2.0.0
+streamlit>=1.28.0
+Faker>=20.0.0
+
+# Gemini API (model_inversion/generate_dataset.py)
+google-genai>=1.0.0
+
+# Optional: load .env in your own entrypoints
+python-dotenv>=1.0.0
+
+# --- Optional extras (install manually if you need them) ---
+# spacy>=3.7.0                    # benchmark baselines / archived SAHA layers; then: python -m spacy download en_core_web_sm
+# presidio-analyzer presidio-anonymizer  # see benchmark/scripts/kaggle_notebook.py
+# wandb>=0.16.0                   # pipeline_maskfill/kaggle_notebook.py logging
