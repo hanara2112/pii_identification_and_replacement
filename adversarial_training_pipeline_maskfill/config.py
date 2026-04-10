@@ -77,6 +77,9 @@ MAX_INPUT_LENGTH  = 96    # masked_mlm / masked_s2s → filler encoder
 MAX_TARGET_LENGTH = 96    # anonymized / original    → decoder labels
 
 # ── Training hyperparameters ────────────────────────────────────────────────
+# Defaults target ~80GB-class GPUs (Lambda, A100): batch×accum = 16 with 4× fewer
+# micro-batches/epoch than (1×16) or (2×8). On T4 / 16GB: train_adv.py
+#   --combo 2 --batch_size 1 --grad_accum 16   or   --combo 1 --batch_size 2 --grad_accum 8
 NUM_EPOCHS       = 3
 WEIGHT_DECAY     = 0.01
 LABEL_SMOOTHING  = 0.1
@@ -86,16 +89,16 @@ NUM_WORKERS      = 0      # 0 = main process; avoids pinned-memory OOM on small 
 # Combo-specific batch sizes & LRs
 # Combo 1 (DeBERTa-MLM, encoder-only): model is smaller per-param but
 #   gradient path is approximate → use slightly smaller LR.
-COMBO1_BATCH_SIZE       = 2
-COMBO1_EVAL_BATCH_SIZE  = 2
-COMBO1_GRAD_ACCUM_STEPS = 8     # effective batch = 2×8 = 16
+COMBO1_BATCH_SIZE       = 4
+COMBO1_EVAL_BATCH_SIZE  = 4
+COMBO1_GRAD_ACCUM_STEPS = 4     # effective batch = 4×4 = 16
 COMBO1_LEARNING_RATE    = 5e-6
 COMBO1_WARMUP_STEPS     = 100
 
 # Combo 2 (BART filler): exact soft-embedding path → standard LR.
-COMBO2_BATCH_SIZE       = 1
-COMBO2_EVAL_BATCH_SIZE  = 1
-COMBO2_GRAD_ACCUM_STEPS = 16    # effective batch = 1×16 = 16
+COMBO2_BATCH_SIZE       = 4
+COMBO2_EVAL_BATCH_SIZE  = 4
+COMBO2_GRAD_ACCUM_STEPS = 4     # effective batch = 4×4 = 16
 COMBO2_LEARNING_RATE    = 1e-5
 COMBO2_WARMUP_STEPS     = 100
 

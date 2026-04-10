@@ -23,6 +23,9 @@ Usage
     python3 run_all.py --combos 2         # only Combo 2
     python3 run_all.py --eval_only        # skip training, evaluate + zip
     python3 run_all.py --eval_batch 4     # eval batch size (default 4)
+    python3 run_all.py --fast              # timeboxed: 12k train, 1 epoch, batch/accum 4, smaller eval
+    python3 run_all.py --max_train_samples 8000 --train_epochs 1 \\
+        --train_batch_size 4 --train_grad_accum 4   # manual overrides
 
 Hub auth: set ``HF_TOKEN`` or ``HUGGING_FACE_HUB_TOKEN`` (never commit tokens).
 ``HF_USERNAME`` sets where models are pushed; if omitted, the script uses the
@@ -103,7 +106,32 @@ ap.add_argument("--eval_only",  action="store_true",
                 help="Skip training; only evaluate + zip")
 ap.add_argument("--eval_batch", type=int, default=4,
                 help="Batch size for evaluate_adv.py (default 4; lower if OOM)")
+ap.add_argument("--max_train_samples", type=int, default=None,
+                help="Passed to train_adv.py (cap training rows)")
+ap.add_argument("--train_epochs", type=int, default=None,
+                help="Passed to train_adv.py --epochs")
+ap.add_argument("--train_batch_size", type=int, default=None,
+                help="Passed to train_adv.py --batch_size")
+ap.add_argument("--train_grad_accum", type=int, default=None,
+                help="Passed to train_adv.py --grad_accum")
+ap.add_argument("--max_eval_samples", type=int, default=None,
+                help="Passed to train_adv.py (smaller eval set → faster val)")
+ap.add_argument("--fast", action="store_true",
+                help="Timeboxed training: 12k train rows, 1 epoch, batch/accum 4, 2k eval "
+                     "(only fills unset flags; use explicit args to override pieces)")
 ARGS = ap.parse_args()
+
+if ARGS.fast:
+    if ARGS.max_train_samples is None:
+        ARGS.max_train_samples = 12_000
+    if ARGS.train_epochs is None:
+        ARGS.train_epochs = 1
+    if ARGS.train_batch_size is None:
+        ARGS.train_batch_size = 4
+    if ARGS.train_grad_accum is None:
+        ARGS.train_grad_accum = 4
+    if ARGS.max_eval_samples is None:
+        ARGS.max_eval_samples = 2_048
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -111,6 +139,21 @@ ARGS = ap.parse_args()
 def banner(msg: str):
     bar = "=" * 65
     print(f"\n{bar}\n  {msg}\n{bar}", flush=True)
+
+
+def _train_adv_cmd(combo: int) -> list:
+    cmd = [sys.executable, str(BASE_DIR / "train_adv.py"), "--combo", str(combo)]
+    if ARGS.max_train_samples is not None:
+        cmd += ["--max_train_samples", str(ARGS.max_train_samples)]
+    if ARGS.train_epochs is not None:
+        cmd += ["--epochs", str(ARGS.train_epochs)]
+    if ARGS.train_batch_size is not None:
+        cmd += ["--batch_size", str(ARGS.train_batch_size)]
+    if ARGS.train_grad_accum is not None:
+        cmd += ["--grad_accum", str(ARGS.train_grad_accum)]
+    if ARGS.max_eval_samples is not None:
+        cmd += ["--max_eval_samples", str(ARGS.max_eval_samples)]
+    return cmd
 
 
 def run_step(desc: str, cmd: list) -> bool:
@@ -237,7 +280,9 @@ def zip_results() -> Path:
 def main():
     py = sys.executable
 
-    banner(f"run_all.py  —  combos={ARGS.combos}  eval_only={ARGS.eval_only}")
+    banner(
+        f"run_all.py  —  combos={ARGS.combos}  eval_only={ARGS.eval_only}  fast={ARGS.fast}"
+    )
 
     for combo in ARGS.combos:
         cfg = COMBO_CONFIG[combo]
@@ -249,7 +294,7 @@ def main():
         if not ARGS.eval_only:
             run_step(
                 f"Training Combo {combo} — {cfg['label']}",
-                [py, BASE_DIR / "train_adv.py", "--combo", combo],
+                _train_adv_cmd(combo),
             )
             # ── 2. Push hardened model to HF ─────────────────────────────
             push_combo_to_hf(combo)
