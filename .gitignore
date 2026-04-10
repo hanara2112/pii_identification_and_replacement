@@ -59,3 +59,17 @@ models/
 
 /report
 /report_final
+
+# Nested clones / separate repos (do not commit as gitlinks)
+/pii-evaluation-metrics/
+/pii_identification_and_anonymisations/
+/ref/text-anonymization-benchmark/
+
+# Local reports / scratch (keep out of repo)
+/attack_report.txt
+/eval_report_*.txt
+/evaluation_results_readable.txt
+/tab_evaluation_results_readable.txt
+/Implementation Review Suggestions.md
+/notebooks/nb3a_cada_defense_bart.ipynb
+/notebooks/nb3b_cada_defense_deberta.ipynb

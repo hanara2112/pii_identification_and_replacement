@@ -1,0 +1,629 @@
+\documentclass[10pt,twocolumn]{article}
+
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage[colorlinks=true,citecolor=blue,linkcolor=blue,urlcolor=blue]{hyperref}
+\usepackage{natbib}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage{caption}
+\usepackage{enumitem}
+\usepackage{array}
+
+\setlength{\parskip}{0.4em}
+\setlist{nosep,leftmargin=1.2em}
+
+\title{Anonymization Under Attack: Evaluating PII Protection\\Beyond Detection Accuracy}
+\author{
+  Mr A.\thanks{International Institute of Information Technology, Hyderabad.}
+  % TODO: add remaining team member names here
+  \\[2pt]
+  \texttt{huggingface.co/datasets/huggingbahl21/saha-al}
+}
+\date{}
+
+\begin{document}
+\maketitle
+
+% ============================================================
+\begin{abstract}
+Text anonymization systems are routinely evaluated on detection accuracy or token-level recall, yet these metrics ignore whether anonymized text resists adversarial re-identification.
+We introduce SAHA-AL, a benchmark that evaluates PII anonymization as a \emph{system under attack}, measuring privacy risk from retrieval-based, statistical, and generative adversaries alongside a formalized privacy-utility tradeoff.
+Across eight baselines, fine-tuned seq2seq models reduce entity leakage from 26--83\% (rule-based) to below 1\%, but retrieval attacks still recover 1.9\% of entities---$\approx$15$\times$ more than generative LLM attacks.
+Standard evaluation metrics fail to expose this residual risk: anonymization benchmarks must incorporate adversarial threat models.
+\end{abstract}
+
+% ============================================================
+\section{Introduction}\label{sec:intro}
+
+Text anonymization is a prerequisite for privacy-preserving data sharing in healthcare, legal, and financial domains.
+In practice, organizations deploy rule-based pipelines~\citep{presidio2023,spacy2020} or fine-tuned models~\citep{lewis2020bart,raffel2020t5} to replace personally identifiable information (PII) with synthetic alternatives, then assume the output is safe to release.
+This assumption is rarely tested.
+
+Existing benchmarks evaluate anonymization as a standalone text transformation: detection $F_1$, token recall, or surface-level leakage rates.
+None systematically subject the anonymized output to adversarial attack.
+This creates a dangerous gap: a system may appear to achieve low leakage while remaining vulnerable to embedding-based retrieval~\citep{shokri2017} or LLM-based inference~\citep{staab2024}.
+Surface anonymization is not semantic privacy.
+
+SAHA-AL closes this gap.
+The name refers to the broader project: a \textbf{S}emi-\textbf{A}utomated \textbf{H}uman-in-the-loop \textbf{A}nnotation pipeline with \textbf{A}ctive \textbf{L}earning that produces the gold-standard dataset, on top of which this benchmark is built.
+The benchmark itself decomposes evaluation into three tasks---detection, anonymization quality, and adversarial privacy risk---and defines a three-tier threat model covering passive observation, retrieval-based re-identification, and generative inference.
+The core thesis of this work is that \textbf{PII anonymization must be evaluated as a system under adversarial attack, not as a standalone text transformation task.}
+
+\paragraph{Contributions.}
+\begin{enumerate}
+\item A multi-task evaluation framework with 11~metrics spanning leakage, utility, format preservation, and adversarial attack resistance.
+\item A three-tier adversarial threat model incorporating statistical (CRR-3), retrieval (ERA), and generative (LRR) attacks.
+\item A parameterized Privacy-Utility Score (PUS) and Pareto frontier analysis formalizing the privacy-utility tradeoff.
+\item A diagnostic failure taxonomy that classifies entity-level errors into seven categories (five of which are active on the tested systems).
+\item Empirical evidence on eight baselines showing that (a)~end-to-end seq2seq models reduce leakage by an order of magnitude over rule-based pipelines, and (b)~retrieval attacks expose residual privacy risk invisible to standard metrics.
+\end{enumerate}
+
+% ============================================================
+\section{Related Work}\label{sec:related}
+
+\paragraph{PII detection and anonymization benchmarks.}
+Prior PII benchmarks focus predominantly on detection accuracy.
+The Text Anonymization Benchmark (TAB)~\citep{pilan2022tab} evaluates entity-level masking on European court decisions but does not measure anonymization quality or adversarial risk.
+Clinical de-identification shared tasks~\citep{stubbs2015} evaluate span-level detection on medical notes via $F_1$, treating anonymization as a detection-only problem.
+\citet{lison2021} survey text anonymization methods and note that most evaluations measure only precision and recall of entity detection without assessing whether anonymized outputs resist re-identification.
+SAHA-AL differs by evaluating anonymization as a \emph{system under attack}: detection is one of three tasks, complemented by leakage, utility, and adversarial resistance metrics.
+
+\paragraph{Adversarial privacy attacks.}
+Membership inference attacks~\citep{shokri2017} assess whether a record was in the training data but do not target anonymized text.
+\citet{staab2024} demonstrate that LLMs can infer personal attributes from text, motivating our LRR metric.
+Embedding-based re-identification has been explored in record linkage~\citep{narayanan2008} but not previously applied as a benchmark metric for text anonymization.
+Our ERA metric operationalizes retrieval-based re-identification as a standardized evaluation component.
+
+\paragraph{Anonymization methods.}
+Rule-based systems such as Presidio~\citep{presidio2023} and spaCy NER pipelines~\citep{spacy2020} follow a detect-then-replace paradigm.
+Neural approaches include fine-tuned sequence-to-sequence models~\citep{lewis2020bart,raffel2020t5} that learn end-to-end text rewriting, and hybrid pipelines combining NER with conditional generation.
+Differential privacy~\citep{dwork2006} provides formal guarantees but is typically applied to aggregate statistics rather than free-text anonymization.
+
+% ============================================================
+\section{Problem Formulation}\label{sec:formulation}
+
+Let $\mathcal{D} = \{(x_i, E_i)\}_{i=1}^{N}$ be a dataset where $x_i$ is a text document and $E_i = \{e_{i,1}, \ldots, e_{i,k_i}\}$ is the set of PII entities, each $e = (\text{text}, \text{type}, \text{start}, \text{end})$ with surface text, type label, and character-level span offsets.
+
+An \emph{anonymization system} $f$ produces:
+\begin{equation}
+  \hat{x}_i = f(x_i)
+\end{equation}
+where $\hat{x}_i$ is the anonymized text with entities replaced by synthetic alternatives.
+A \emph{detection system} $g$ produces predicted spans $\hat{E}_i = g(x_i) = \{(\text{start}_j, \text{end}_j, \text{type}_j)\}_{j=1}^{m_i}$.
+
+\paragraph{Threat model.}
+We consider three adversary classes, in order of increasing capability:
+\begin{enumerate}
+\item \textbf{Passive observer.} Has access only to $\hat{x}_i$. Can the original entity be read directly from the output? Measured by ELR.
+\item \textbf{Knowledge-enriched adversary.} Has access to a database of candidate entities (e.g., from training data or a census). Can they recover the original entity via embedding similarity? Measured by ERA@$k$.
+\item \textbf{Generative adversary.} Has access to a powerful language model. Can they infer the original entity from contextual clues in $\hat{x}_i$? Measured by LRR.
+\end{enumerate}
+
+This hierarchy reflects realistic deployment threats: passive leakage is the minimum bar, but organizations must also defend against adversaries with auxiliary knowledge or generative capabilities.
+
+% ============================================================
+\section{Benchmark Design}\label{sec:benchmark}
+
+This section describes the core contribution: an evaluation framework that treats anonymization as a system evaluated under multiple adversarial capabilities.
+
+\subsection{Task 1: PII Detection}
+
+\textbf{Input:} Original text $x_i$. \textbf{Output:} Detected entity spans $\hat{E}_i$.
+Predicted spans are matched to gold spans via greedy bipartite matching in three modes: \emph{exact} (identical offsets), \emph{partial} (IoU~$>0.5$), and \emph{type-aware} (exact match plus type agreement).
+Corpus-level micro-averaged precision, recall, and $F_1$ are reported.
+
+\subsection{Task 2: Text Anonymization Quality}
+
+\textbf{Input:} Original text $x_i$. \textbf{Output:} Anonymized text $\hat{x}_i$.
+
+\paragraph{Entity Leakage Rate (ELR).}
+The fraction of gold entities whose text appears verbatim in $\hat{x}_i$, using word-boundary case-insensitive regex:
+\begin{equation}
+\text{ELR} = \frac{\sum_{i}\sum_{j} \mathbb{1}[e_{i,j} \in \hat{x}_i]}{|\mathcal{E}|} \times 100\%.
+\end{equation}
+
+\paragraph{Token Recall.}
+Fraction of entity-span tokens (length~$\geq 2$) absent from $\hat{x}_i$. Higher is better.
+
+\paragraph{Over-Masking Rate (OMR).}
+Fraction of non-entity tokens unnecessarily altered. Lower is better.
+
+\paragraph{Format Preservation Rate (FPR).}
+For structured types (EMAIL, PHONE, SSN, CREDIT\_CARD, ZIPCODE, DATE), the fraction of replacements matching an expected format regex.
+
+\paragraph{BERTScore $F_1$.}
+Semantic similarity between $x_i$ and $\hat{x}_i$ via \texttt{distilbert-base-uncased} embeddings~\citep{zhang2020bertscore}, averaged across records.
+
+\subsection{Task 3: Privacy Risk Assessment}
+
+This task subjects anonymized outputs to adversarial attack.
+No analogous evaluation exists in prior PII benchmarks.
+
+\paragraph{CRR-3 (Capitalized 3-gram Survival Rate).}
+Fraction of capitalized 3-grams from $x_i$ appearing in $\hat{x}_i$. Captures named-entity structure survival beyond individual entity matching.
+
+\paragraph{ERA@$k$ (Entity Recovery Attack).}
+A retrieval adversary encodes candidate entities (per type, from training data, capped at 500) and anonymized texts with Sentence-BERT~\citep{reimers2019}.
+For each gold entity, candidates are ranked by cosine similarity to the anonymized text embedding.
+ERA@$k$ is the fraction recovered in the top-$k$:
+\begin{equation}
+\text{ERA@}k = \frac{|\{e : e.\text{text} \in \text{Top-}k(\cos(\hat{x}, \text{pool}_{e.\text{type}}))\}|}{|\mathcal{E}_{\text{eval}}|} \times 100\%.
+\end{equation}
+
+\paragraph{LRR (LLM Re-identification Rate).}
+A generative adversary is prompted to guess original entities from anonymized text.
+Exact and fuzzy ($>0.8$ character similarity) match rates are reported.
+Evaluated on 300 sampled records using Qwen~2.5-14B and Llama~3.3-70B.
+
+\paragraph{UAC (Unique Attribute Combination Rate).}
+Fraction of records with a unique surviving quasi-identifier combination, approximating $k$-anonymity violation at $k\!=\!1$~\citep{sweeney2002}.
+
+\subsection{Privacy-Utility Tradeoff}
+
+We define the Privacy-Utility Score:
+\begin{equation}
+\text{PUS}(\lambda) = \lambda \cdot \underbrace{\left(1 - \tfrac{\text{ELR}}{100}\right)}_{\text{Privacy}} + (1-\lambda) \cdot \underbrace{\tfrac{\text{BERTScore}}{100}}_{\text{Utility}}
+\end{equation}
+where $\lambda \in [0,1]$.
+A system is \emph{Pareto-optimal} if no other system achieves both strictly higher privacy and strictly higher utility.
+PUS provides a single scalar for system comparison at any operating point.
+
+\subsection{Failure Taxonomy}
+
+The implementation classifies each entity replacement into one of seven categories, evaluated in priority order: \emph{Full Leak} (verbatim survival), \emph{Boundary Error} (partial token survival at word level, length~$>3$), \emph{Type Confusion} (replacement does not match expected format for the entity type), \emph{Format Break} (structured replacement breaks document format), \emph{Over-Masking} (non-entity content unnecessarily altered), \emph{Context Retention} ($>$80\% context word overlap in a $\pm$50\,character window), or \emph{Clean}.
+In practice, Type Confusion and Over-Masking produced zero counts across all tested systems, so results tables report the five active categories.
+This taxonomy enables targeted diagnosis of where and how systems fail, moving beyond aggregate metrics.
+
+% ============================================================
+\section{Experimental Setup}\label{sec:setup}
+
+\subsection{Dataset}
+
+\begin{table}[t]
+\centering
+\caption{Dataset statistics.}\label{tab:dataset}
+\small
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+Split & Records & Entities & Avg/Rec & PII\% \\
+\midrule
+Train & 113{,}133 & 286{,}542 & 2.53 & 14.9 \\
+Validation & 3{,}600 & 9{,}211 & 2.56 & 15.0 \\
+Test & 3{,}600 & 9{,}271 & 2.58 & 15.2 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:dataset} summarizes the dataset.
+The original texts are drawn from the English subset of the AI4Privacy corpus, which contains crowd-sourced text with synthetic PII.
+Entity annotations and anonymized text pairs are produced by the SAHA-AL annotation pipeline: spaCy \texttt{en\_core\_web\_lg} NER and 23~regex patterns pre-annotate entities, a merger resolves overlapping spans with confidence scoring, and Faker generates format-preserving replacements.
+Human annotators review and correct entity labels and replacements through a Streamlit interface, producing gold-standard parallel pairs.
+The final dataset is augmented via entity swapping ($4\times$), template filling, and Easy Data Augmentation ($3\times$).
+
+\paragraph{Entity type mapping.}
+The dataset uses 12~entity type labels, dominated by FULLNAME (5{,}332 entities, 57.5\% of the test set) and UNKNOWN (1{,}813, 19.6\%).
+However, the evaluation scripts \emph{re-infer} entity types from text patterns using cascaded heuristics (regex for structured types, rule-based classification for names and organizations), producing a different 13-type mapping.
+Under this evaluation mapping, FULLNAME drops to 4{,}177 entities (some reclassified as FIRST\_NAME or absorbed into other categories), while ORGANIZATION grows from~1 to 1{,}062 and a new LOCATION type (753) appears.
+The aggregate ELR is unaffected by this re-mapping because it uses text-based matching, but per-type breakdowns (Table~\ref{tab:pertype}) use the evaluation mapping.
+Train/test entity string overlap is 43.9\%.
+
+\subsection{Baseline Systems}
+
+\paragraph{Rule-based.}
+\emph{Regex+Faker}: ordered regex patterns with Faker-generated replacements.
+\emph{spaCy+Faker}~\citep{spacy2020}: \texttt{en\_core\_web\_lg} NER overlaid with regex, Faker replacement.
+\emph{Presidio}~\citep{presidio2023}: Microsoft's production SDK with default recognizers and anonymization operators.
+
+\paragraph{Seq2Seq.}
+Five encoder-decoder models fine-tuned with \texttt{PIIAwareLoss}, a custom loss function that combines label-smoothed cross-entropy on non-PII tokens with an anti-leakage penalty $-\log(1-p(\text{original token}))$ at PII-span positions, weighted by entity-type sensitivity ($\alpha\!=\!0.3$, $\beta\!=\!2.0$, label smoothing~$0.1$).
+All five checkpoints are from this training regime (\texttt{train3.py} in the \texttt{Seq2Seq\_model} codebase; checkpoints stored under \texttt{checkpoints\_pii\_aware\_loss/}).
+The models are: BART-base~\citep{lewis2020bart} (139M), Flan-T5-small~\citep{chung2022flant5} (77M), T5-small~\citep{raffel2020t5} (60M), DistilBART (230M), and T5-efficient-tiny (16M).
+A sixth model (Flan-T5-base with QLoRA) is implemented but was not included in this evaluation.
+Benchmark inference uses beam search ($B\!=\!4$, max length 128).
+Note that the \texttt{Seq2Seq\_model} internal evaluation script uses greedy decoding ($B\!=\!1$) on the full test set for speed; all results reported here use $B\!=\!4$.
+
+\subsection{Evaluation Protocol}
+
+All evaluations use the frozen test split (3{,}600 records, 9{,}271 entities).
+ERA evaluates 1{,}261 entities---the subset for which typed candidate pools (capped at 500 per type from training data) contain at least two candidates.
+LRR evaluates 300 sampled records.
+A bootstrap resampling procedure~\citep{efron1993} ($B\!=\!1{,}000$, 95\%) is implemented for key metrics (ELR, token recall, OMR, FPR, CRR-3) but was not executed for the results reported here; we plan to include confidence intervals in a future revision.
+
+\paragraph{Curated test set.}
+A separate manually curated test set was constructed via the SAHA-AL annotation pipeline: annotators reviewed and corrected entity labels and replacement quality on a held-out subset of AI4Privacy records, using the Streamlit interface with confidence-based routing into green (high-agreement), yellow, and red (low-confidence) queues.
+This set is intended to validate whether results on the synthetic test split generalize to human-verified annotations.
+The full benchmark suite has not yet been run on this set.
+
+% ============================================================
+\section{Results}\label{sec:results}
+
+\subsection{End-to-End vs.\ Detect-Then-Replace}\label{sec:res-main}
+
+\begin{table}[t]
+\centering
+\caption{Task~2: Anonymization quality. ELR: entity leakage rate (\%); TokRec: token recall (\%); BERT: BERTScore $F_1$.}\label{tab:anon}
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+System & ELR$\downarrow$ & TokRec$\uparrow$ & OMR$\downarrow$ & BERT$\uparrow$ \\
+\midrule
+BART-base & \textbf{0.93} & \textbf{95.50} & \textbf{0.13} & 92.74 \\
+Flan-T5-sm & 0.99 & 95.33 & 0.22 & 92.47 \\
+DistilBART & 1.23 & 94.41 & 0.15 & 86.34 \\
+T5-small & 1.54 & 94.15 & 0.19 & 92.59 \\
+T5-eff-tiny & 4.14 & 90.42 & 0.49 & 92.57 \\
+\midrule
+spaCy+Faker & 26.44 & 74.59 & 2.47 & 91.86 \\
+Presidio & 33.77 & 68.18 & 1.18 & 90.04 \\
+Regex+Faker & 83.39 & 23.05 & 0.00 & 98.15 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:anon} reports anonymization quality.
+All seq2seq models achieve ELR below 5\%.
+BART-base leaks 86 of 9{,}271 entities (0.93\%) while preserving 95.5\% of non-PII tokens at BERTScore $F_1 = 92.74$.
+The best rule-based system (spaCy+Faker) leaks 2{,}451 entities (26.44\%)---28$\times$ more.
+Regex+Faker leaks 83.39\%.
+
+This is an order-of-magnitude difference, not an incremental improvement.
+The gap reflects a qualitative shift: seq2seq models bypass the detection bottleneck by learning implicit entity models during training, while rule-based systems leak every entity the detector misses.
+
+\subsection{Detection is the Bottleneck}\label{sec:res-det}
+
+\begin{table}[t]
+\centering
+\caption{Task~1: Span-level detection $F_1$.}\label{tab:detection}
+\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+System & Exact & Partial & Type-aware \\
+\midrule
+spaCy+Faker & 56.30 & 69.38 & 18.18 \\
+Presidio & 48.57 & 60.11 & 4.97 \\
+Regex+Faker & 25.86 & 27.99 & 24.39 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+No rule-based detector exceeds 57\% exact $F_1$ (Table~\ref{tab:detection}).
+Structured types (EMAIL, CREDIT\_CARD, SSN) are detected at $>$92\% recall by all systems.
+FULLNAME recall ranges from 0\% (Regex) to 39\% (spaCy); ADDRESS recall is 0\% across all systems.
+
+In a detect-then-replace pipeline, every missed entity is leaked verbatim.
+spaCy misses 4{,}863 of 9{,}271 entities; of its 2{,}451 leaked entities, the overwhelming majority are undetected names.
+Detection recall is the ceiling on rule-based anonymization quality, and that ceiling is low.
+
+\subsection{Privacy Under Attack}\label{sec:res-attack}
+
+\begin{table}[t]
+\centering
+\caption{Task~3: Adversarial privacy risk.}\label{tab:privacy}
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+System & CRR-3$\downarrow$ & ERA@1$\downarrow$ & ERA@5$\downarrow$ & UAC$\downarrow$ \\
+\midrule
+BART-base & \textbf{34.62} & \textbf{1.90} & \textbf{4.84} & \textbf{0.33} \\
+Flan-T5-sm & 34.94 & 1.67 & 5.08 & 0.22 \\
+spaCy+Faker & 40.62 & 9.36 & 14.27 & 1.58 \\
+Presidio & 50.33 & 20.46 & 26.09 & 1.78 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{Attack comparison for BART-base.}\label{tab:attack_compare}
+\small
+\begin{tabular}{@{}lrl@{}}
+\toprule
+Attack & Recovery & Method \\
+\midrule
+LRR exact (Qwen 14B) & 0.13\% & Generative inference \\
+LRR fuzzy (Qwen 14B) & 0.53\% & Generative (fuzzy) \\
+ELR & 0.93\% & Verbatim string match \\
+ERA@1 & 1.90\% & Embedding retrieval, top-1 \\
+ERA@5 & 4.84\% & Embedding retrieval, top-5 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:privacy} reports adversarial metrics.
+BART-base leads on all measures.
+Table~\ref{tab:attack_compare} reveals the attack effectiveness hierarchy:
+\[
+\text{LRR}_{\text{exact}} (0.13\%) < \text{ELR} (0.93\%) < \text{ERA@1} (1.90\%) < \text{ERA@5} (4.84\%).
+\]
+
+Retrieval-based attacks recover $\approx$15$\times$ more entities than generative LLM attacks (1.90\% vs.\ 0.13\%).
+This is the central finding of the adversarial evaluation: a system that appears to achieve $<$1\% leakage under passive observation is exposed at nearly 5\% under a retrieval adversary with modest auxiliary knowledge.
+Standard ELR-only evaluation would miss this entirely.
+
+\subsection{Where Models Fail}\label{sec:res-fail}
+
+\begin{table}[t]
+\centering
+\caption{Per-type ELR for BART-base.}\label{tab:pertype}
+\small
+\begin{tabular}{@{}lrrl@{}}
+\toprule
+Type & Leaked & Total & ELR \\
+\midrule
+FULLNAME & 45 & 4{,}177 & 1.08\% \\
+UNKNOWN & 26 & 1{,}081 & 2.41\% \\
+LOCATION & 6 & 753 & 0.80\% \\
+ORGANIZATION & 6 & 1{,}062 & 0.57\% \\
+TIME & 2 & 337 & 0.59\% \\
+DATE & 1 & 599 & 0.17\% \\
+EMAIL/PHONE/SSN/CC/ID/ZIP & 0 & 1{,}262 & 0.00\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{Failure taxonomy (\% of 9{,}271 entities).}\label{tab:taxonomy}
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Category & BART & spaCy & Presid. & Regex \\
+\midrule
+Clean & 61.5 & 42.0 & 28.2 & 3.5 \\
+Full Leak & 0.9 & 26.4 & 33.8 & 83.4 \\
+Ctx Retention & 36.4 & 29.4 & 25.2 & 12.7 \\
+Boundary Err & 1.1 & 1.8 & 2.1 & 0.3 \\
+Format Break & 0.1 & 0.4 & 10.7 & 0.0 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Structured PII is effectively eliminated under the tested (synthetic) distribution.
+All seq2seq models achieve 0\% leakage on EMAIL, PHONE, SSN, CREDIT\_CARD, ID\_NUMBER, and ZIPCODE (Table~\ref{tab:pertype}); whether this holds on real-world data with diverse international formats remains an open question.
+Names remain the open problem: FULLNAME and UNKNOWN account for 71 of BART-base's 86 leaks (82.6\%).
+
+The failure taxonomy (Table~\ref{tab:taxonomy}) reveals qualitatively different error profiles.
+BART-base's dominant non-clean category is context retention (36.4\%), which reflects faithful non-PII preservation---not re-identification risk.
+Its actual privacy failures (Full Leak + Boundary Error) total 2.0\%.
+Presidio's distinctive failure is format breaks (10.7\%): its default operator emits tags like \texttt{<DATE\_TIME>} instead of natural replacements, destroying downstream utility.
+Rule-based systems exhibit systematic, categorical failure (83.4\% full leak for Regex); seq2seq systems produce rare, specific failures concentrated on unusual names.
+
+\subsection{Pareto Frontier}\label{sec:res-pareto}
+
+\begin{table}[t]
+\centering
+\caption{Privacy-utility tradeoff. Privacy $= 1 - \text{ELR}/100$; Utility $= \text{BERTScore}/100$.}\label{tab:pareto}
+\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+System & Privacy & Utility & PUS$_{0.5}$ \\
+\midrule
+BART-base & \textbf{0.991} & 0.927 & \textbf{0.959} \\
+Flan-T5-sm & 0.990 & 0.925 & 0.957 \\
+T5-small & 0.985 & 0.926 & 0.955 \\
+T5-eff-tiny & 0.959 & 0.926 & 0.942 \\
+DistilBART & 0.988 & 0.863 & 0.926 \\
+spaCy+Faker & 0.736 & 0.919 & 0.827 \\
+Presidio & 0.662 & 0.900 & 0.781 \\
+Regex+Faker & 0.166 & 0.982 & 0.574 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Two systems lie on the Pareto frontier (Table~\ref{tab:pareto}): Regex+Faker (highest utility, lowest privacy) and BART-base (highest privacy with competitive utility).
+All other systems are strictly dominated on both axes, though several seq2seq variants (Flan-T5-small, T5-small) fall within a narrow margin of BART-base.
+BART-base is the only system whose privacy score (0.991) exceeds its utility score (0.927), so its PUS increases with $\lambda$ and it ranks first for any $\lambda \geq 0.07$.
+
+% ============================================================
+\section{Discussion}\label{sec:discussion}
+
+\paragraph{Why end-to-end models succeed.}
+Detect-then-replace pipelines expose a hard coupling: anonymization quality is bounded by detection recall, and undetected entities leak with probability one.
+Seq2seq models decouple detection from replacement by learning to rewrite text holistically.
+During training, the model implicitly learns which tokens constitute PII and how to generate contextually consistent replacements, without requiring an explicit entity inventory.
+This explains why BART-base achieves 0.93\% ELR despite never being trained as an NER system: the entity model is latent in the encoder-decoder weights.
+
+\paragraph{Why BERTScore alone is misleading.}
+Regex+Faker achieves the highest BERTScore (98.15)---seemingly the best utility---while leaking 83.39\% of entities.
+The explanation is trivial: Regex detects only 15\% of entities, so 85\% of the text is unchanged, yielding near-perfect semantic similarity.
+A system that modifies nothing achieves BERTScore~$\approx$\,100 and ELR~$\approx$\,100.
+BERTScore~\citep{zhang2020bertscore} measures utility but is blind to privacy.
+The PUS score correctly penalizes this failure: Regex ranks last at PUS\,=\,0.574.
+This underscores the need for composite evaluation---no single metric captures both privacy and utility.
+
+\paragraph{Why retrieval attacks matter more than generative ones.}
+Replacement-based anonymization substitutes one plausible name for another, producing contextually coherent text.
+A generative adversary (LLM) cannot distinguish ``Michael Jones'' from ``John Smith'' based on surrounding context, because both are valid completions---hence LRR~$< 0.2\%$.
+A retrieval adversary does not reason about plausibility.
+It exploits statistical correlations between the anonymized text's global embedding and candidate entity embeddings, bypassing the semantic consistency of the replacement.
+ERA@1 recovers 1.90\% of entities precisely because embedding-level signal persists after surface-level replacement.
+
+The implication is direct: \textbf{surface anonymization does not equal semantic privacy.}
+Text that passes all standard quality metrics may still be vulnerable to an adversary with embedding access and auxiliary knowledge.
+Future anonymization systems must consider embedding-level defenses, not just surface-level text replacement.
+
+\paragraph{Model capacity and architecture.}
+ELR scales approximately log-linearly with parameter count from T5-eff-tiny (16M, 4.14\%) to BART-base (139M, 0.93\%).
+DistilBART (230M) breaks this trend with 1.23\% ELR but only 86.34 BERTScore, likely because its summarization-oriented pretraining produces more aggressive text rewriting.
+Architecture and pretraining objective matter as much as raw parameter count.
+
+% ============================================================
+\section{Limitations}\label{sec:limitations}
+
+This section warrants careful reading.
+
+\paragraph{Pending evaluation on curated test set.}
+The manually curated test set (Section~\ref{sec:setup}) has been constructed but the full benchmark suite has not yet been run on it.
+Reported ELR results may be optimistic relative to human-verified annotations.
+A rigorous ablation on this dataset is required to validate robustness claims.
+
+\paragraph{Synthetic data.}
+Original texts are drawn from the AI4Privacy corpus, which uses crowd-sourced templates with Faker-generated PII.
+Entity distributions, naming patterns, and contextual structure may not reflect real-world PII distributions (medical records, legal documents, social media).
+Results should be interpreted as a controlled comparison, not as deployment-ready estimates.
+
+\paragraph{Train/test entity overlap.}
+43.9\% of unique test entity strings appear in training data, a consequence of Faker's finite name/email pools.
+Seq2seq models may partially benefit from memorization.
+Absolute ELR figures are potentially inflated; a zero-overlap evaluation split would be needed to disentangle memorization from generalization.
+
+\paragraph{Limited adversary models.}
+ERA uses a closed-world candidate pool (training-set entities, 500 per type).
+Real adversaries may possess broader auxiliary knowledge.
+LRR uses a fixed prompt (Appendix~\ref{app:lrr}); adversarial prompt engineering or white-box access to the anonymization model could yield higher recovery rates.
+The current threat model represents a lower bound on adversarial capability.
+
+\paragraph{Entity type ambiguity.}
+Approximately 19.6\% of test entities are typed as UNKNOWN due to heuristic inference limitations, reducing the reliability of per-type analysis.
+
+\paragraph{English only.}
+All data, models, and evaluation are English-specific.
+
+\paragraph{No formal privacy guarantees.}
+The benchmark provides empirical privacy metrics.
+ELR~$<$\,1\% does not constitute a differential privacy guarantee~\citep{dwork2006} or imply regulatory compliance.
+
+\paragraph{No efficiency evaluation.}
+Inference latency, memory, and computational cost are not measured.
+
+% ============================================================
+\section{Future Work}\label{sec:future}
+
+\begin{enumerate}
+\item \textbf{Curated test set evaluation.}
+Run the full benchmark and ablation study on the manually curated test set to validate ELR robustness and quantify performance degradation relative to the synthetic test split.
+This is the most critical next step.
+\item \textbf{Stronger adversaries.}
+Evaluate adaptive adversaries with white-box access to the anonymization model, adversarial prompt engineering for LRR, and open-world candidate pools for ERA.
+\item \textbf{Embedding-level privacy defenses.}
+Investigate noise injection in the encoder latent space, structurally diverse replacement generation (different name length, ethnicity, gender), and representation scrubbing to reduce ERA vulnerability.
+\item \textbf{Real-world datasets.}
+Extend evaluation to clinical notes, legal documents, and social media text to assess generalization beyond synthetic templates.
+\item \textbf{Zero-overlap split.}
+Construct an evaluation split with zero train/test entity string overlap to measure generalization without memorization confounds.
+\item \textbf{Formal privacy integration.}
+Combine empirical SAHA-AL metrics with differentially private text generation mechanisms to bridge the gap between empirical and theoretical guarantees.
+\end{enumerate}
+
+% ============================================================
+\section{Conclusion}\label{sec:conclusion}
+
+SAHA-AL provides an evaluation framework that treats text anonymization as a system under adversarial attack rather than a standalone text transformation.
+On a synthetic test set, fine-tuned seq2seq models reduce entity leakage from 26--83\% (rule-based) to below 1\%, an order-of-magnitude improvement.
+However, retrieval-based adversaries recover 1.9\% of entities even from the best-performing system---a residual risk invisible to standard leakage metrics.
+Structured PII leakage is effectively eliminated under the tested synthetic distribution; names remain the dominant source of failure.
+
+These findings are subject to important caveats: the data is synthetic, train/test overlap is substantial, and evaluation on a separately curated test set is pending.
+The central claim stands regardless: anonymization benchmarks that measure only detection accuracy or surface-level leakage are insufficient.
+Privacy evaluation must incorporate adversarial threat models.
+
+% ============================================================
+\appendix
+\section{LRR Prompt}\label{app:lrr}
+
+The following prompt is used for the LLM Re-identification Rate (LRR) evaluation. It is passed as a single user message to the generative adversary (Qwen~2.5-14B or Llama~3.3-70B). The \texttt{\{anonymized\_text\}} placeholder is replaced with the anonymized output for each record.
+
+\begin{quote}
+\small\ttfamily
+You are given an anonymized text where personal information has been replaced with fake alternatives.
+
+Anonymized text: \{anonymized\_text\}
+
+For each piece of replaced information, try to guess the ORIGINAL value based on contextual clues. Output one guess per line in the format:\\
+REPLACEMENT -> YOUR\_GUESS
+
+Only output guesses, nothing else.
+\end{quote}
+
+Responses are parsed line-by-line; each line containing ``\texttt{->}'' yields a guess from the right-hand side. An entity is counted as an exact match if it appears verbatim among the parsed guesses, and as a fuzzy match if any guess achieves $>0.8$ character-level similarity (Python \texttt{SequenceMatcher} ratio). For the API path, \texttt{temperature=0} and \texttt{max\_tokens=512}; for local models, \texttt{temperature=0.1}, \texttt{top\_p=0.9}, \texttt{max\_new\_tokens=256}.
+
+% ============================================================
+\bibliographystyle{plainnat}
+\begin{thebibliography}{16}
+
+\bibitem[Lison et~al.(2021)]{lison2021}
+Lison, P., Pilán, I., Sanchez, D., Batet, M., \& {\O}vrelid, L. (2021).
+\newblock Anonymisation models for text data: State of the art, challenges and future directions.
+\newblock In \emph{Proceedings of the 59th Annual Meeting of the Association for Computational Linguistics (ACL)}, pp.\ 4188--4203.
+
+\bibitem[Narayanan \& Shmatikov(2008)]{narayanan2008}
+Narayanan, A. \& Shmatikov, V. (2008).
+\newblock Robust de-anonymization of large sparse datasets.
+\newblock In \emph{2008 IEEE Symposium on Security and Privacy (S\&P)}, pp.\ 111--125.
+
+\bibitem[Pilán et~al.(2022)]{pilan2022tab}
+Pilán, I., Lison, P., {\O}vrelid, L., Papadopoulou, A., Sánchez, D., \& Batet, M. (2022).
+\newblock The Text Anonymization Benchmark ({TAB}): A dedicated corpus and evaluation framework for text anonymization.
+\newblock \emph{Computational Linguistics}, 48(4):1053--1101.
+
+\bibitem[Stubbs et~al.(2015)]{stubbs2015}
+Stubbs, A., Kotfila, C., \& Uzuner, {\"O}. (2015).
+\newblock Automated systems for the de-identification of longitudinal clinical narratives: Overview of 2014 i2b2/{UT}Health shared task Track~1.
+\newblock \emph{Journal of Biomedical Informatics}, 58:S11--S19.
+
+\bibitem[Chung et~al.(2022)]{chung2022flant5}
+Chung, H.~W., Hou, L., Longpre, S., Zoph, B., Tay, Y., Fedus, W., Li, Y., Wang, X., Dehghani, M., Brahma, S., et~al. (2022).
+\newblock Scaling instruction-finetuned language models.
+\newblock \emph{arXiv preprint arXiv:2210.11416}.
+
+\bibitem[Dwork(2006)]{dwork2006}
+Dwork, C. (2006).
+\newblock Differential privacy.
+\newblock In \emph{Proceedings of the 33rd International Colloquium on Automata, Languages and Programming (ICALP)}, pp.\ 1--12. Springer.
+
+\bibitem[Efron \& Tibshirani(1993)]{efron1993}
+Efron, B. \& Tibshirani, R.~J. (1993).
+\newblock \emph{An Introduction to the Bootstrap}.
+\newblock Chapman \& Hall/CRC.
+
+\bibitem[Honnibal et~al.(2020)]{spacy2020}
+Honnibal, M., Montani, I., Van~Landeghem, S., \& Boyd, A. (2020).
+\newblock {spaCy}: Industrial-strength natural language processing in {P}ython.
+\newblock \url{https://spacy.io}.
+
+\bibitem[Lewis et~al.(2020)]{lewis2020bart}
+Lewis, M., Liu, Y., Goyal, N., Ghazvininejad, M., Mohamed, A., Levy, O., Stoyanov, V., \& Zettlemoyer, L. (2020).
+\newblock {BART}: Denoising sequence-to-sequence pre-training for natural language generation, translation, and comprehension.
+\newblock In \emph{Proceedings of the 58th Annual Meeting of the Association for Computational Linguistics (ACL)}, pp.\ 7871--7880.
+
+\bibitem[Microsoft(2023)]{presidio2023}
+Microsoft (2023).
+\newblock Presidio: Data protection and de-identification {SDK}.
+\newblock \url{https://github.com/microsoft/presidio}.
+
+\bibitem[Raffel et~al.(2020)]{raffel2020t5}
+Raffel, C., Shazeer, N., Roberts, A., Lee, K., Narang, S., Matena, M., Zhou, Y., Li, W., \& Liu, P.~J. (2020).
+\newblock Exploring the limits of transfer learning with a unified text-to-text transformer.
+\newblock \emph{Journal of Machine Learning Research}, 21(140):1--67.
+
+\bibitem[Reimers \& Gurevych(2019)]{reimers2019}
+Reimers, N. \& Gurevych, I. (2019).
+\newblock {Sentence-BERT}: Sentence embeddings using {S}iamese {BERT}-networks.
+\newblock In \emph{Proceedings of the 2019 Conference on Empirical Methods in Natural Language Processing (EMNLP)}, pp.\ 3982--3992.
+
+\bibitem[Shokri et~al.(2017)]{shokri2017}
+Shokri, R., Stronati, M., Song, C., \& Shmatikov, V. (2017).
+\newblock Membership inference attacks against machine learning models.
+\newblock In \emph{2017 IEEE Symposium on Security and Privacy (S\&P)}, pp.\ 3--18.
+
+\bibitem[Staab et~al.(2024)]{staab2024}
+Staab, R., Vero, M., Balunovi{\'c}, M., \& Vechev, M. (2024).
+\newblock Beyond memorization: Violating privacy via inference with large language models.
+\newblock In \emph{International Conference on Learning Representations (ICLR)}.
+
+\bibitem[Sweeney(2002)]{sweeney2002}
+Sweeney, L. (2002).
+\newblock $k$-Anonymity: A model for protecting privacy.
+\newblock \emph{International Journal of Uncertainty, Fuzziness and Knowledge-Based Systems}, 10(5):557--570.
+
+\bibitem[Zhang et~al.(2020)]{zhang2020bertscore}
+Zhang, T., Kishore, V., Wu, F., Weinberger, K.~Q., \& Artzi, Y. (2020).
+\newblock {BERT}Score: Evaluating text generation with {BERT}.
+\newblock In \emph{International Conference on Learning Representations (ICLR)}.
+
+\end{thebibliography}
+
+\end{document}
