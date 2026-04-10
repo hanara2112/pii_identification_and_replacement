@@ -52,6 +52,10 @@ from saha_al.config import (
     AUG_TEMPLATE_FILL_COUNT,
     AUG_EDA_MULTIPLIER,
     AUG_EDA_ALPHA,
+    AUG_BACKTRANSL_MULTIPLIER,
+    AUG_BACKTRANSL_PIVOT_LANG,
+    AUG_CONTEXTUAL_MLM_MULTIPLIER,
+    AUG_CONTEXTUAL_MLM_PROB,
 )
 from saha_al.utils.io_helpers import read_jsonl, write_jsonl
 from saha_al.utils.faker_replacements import generate_replacements
@@ -103,8 +107,8 @@ def augment_entity_swap(entry: dict, n_variants: int = 4) -> list:
         replacement_map = {}
 
         for ent in sorted_ents:
-            etype = ent.get("entity_type", "UNKNOWN")
-            pii_text = ent.get("text", "")
+            etype = ent.get("label", "")
+            pii_text = ent.get("value", "")
             start = ent.get("start", 0)
             end = ent.get("end", 0)
 
@@ -120,11 +124,8 @@ def augment_entity_swap(entry: dict, n_variants: int = 4) -> list:
 
             # Build updated entity record
             new_ent = dict(ent)
-            new_ent["text"] = new_val
+            new_ent["value"] = new_val
             new_ent["end"] = start + len(new_val)
-            new_ent["source"] = "aug_swap"
-            new_ent["confidence"] = 1.0
-            new_ent["agreement"] = "synthetic"
             new_entities.append(new_ent)
 
             replacement_map[pii_text] = new_val
@@ -226,8 +227,8 @@ def _build_entity_pools(gold_data: list) -> dict:
 
     for entry in gold_data:
         for ent in entry.get("entities", []):
-            et = ent.get("entity_type", "UNKNOWN")
-            val = ent.get("text", "").strip()
+            et = ent.get("label", "")
+            val = ent.get("value", "").strip()
             if val and et in pools and val not in seen[et]:
                 pools[et].append(val)
                 seen[et].add(val)
@@ -311,13 +312,10 @@ def augment_template_fill(
             start = text.find(val)
             if start >= 0:
                 entities.append({
-                    "text": val,
+                    "value": val,
                     "start": start,
                     "end": start + len(val),
-                    "entity_type": rtype,
-                    "source": "aug_template",
-                    "confidence": 1.0,
-                    "agreement": "synthetic",
+                    "label": rtype,
                 })
         entities.sort(key=lambda e: e["start"])
 
@@ -542,9 +540,6 @@ def augment_eda(entry: dict, n_variants: int = 3, alpha: float = 0.1) -> list:
                 new_ent = dict(ent_ref)
                 new_ent["start"] = len(new_text)
                 new_ent["end"] = len(new_text) + len(seg_text)
-                new_ent["source"] = "aug_eda"
-                new_ent["confidence"] = 1.0
-                new_ent["agreement"] = "synthetic"
                 new_entities.append(new_ent)
             new_text += seg_text
 
@@ -604,7 +599,7 @@ def _reanchor_entities(text: str, entities: list[dict]) -> list[dict]:
     anchored = []
     search_from = 0
     for ent in sorted(entities, key=lambda e: e.get("start", 0)):
-        val = ent.get("text", "")
+        val = ent.get("value", "")
         if not val:
             continue
         pos = text.find(val, search_from)
@@ -628,8 +623,8 @@ def _build_anon_text(
     anon = text
     rmap: dict[str, str] = {}
     for ent in sorted_ents:
-        pii = ent.get("text", "")
-        et = ent.get("entity_type", "UNKNOWN")
+        pii = ent.get("value", "")
+        et = ent.get("label", "")
         start = ent.get("start", 0)
         end = ent.get("end", 0)
         if pii not in rmap:
@@ -643,6 +638,308 @@ def _build_anon_text(
 
 
 # ═════════════════════════════════════════════════════════════════════
+#  STRATEGY 4 :  Back-Translation   (Sennrich et al., WMT 2016)
+# ═════════════════════════════════════════════════════════════════════
+#
+# Round-trip translate NON-ENTITY context through a pivot language
+# (en→de→en) to obtain a natural paraphrase.  Entity spans are
+# replaced with placeholders before translation and restored after,
+# so PII values are never altered.
+
+# Lazy-loaded translation models (heavy — only loaded if strategy is used)
+_bt_models = {}
+
+
+def _load_bt_model(direction: str):
+    """Lazy-load a MarianMT model for a given direction (e.g. 'en-de')."""
+    if direction in _bt_models:
+        return _bt_models[direction]
+    try:
+        from transformers import MarianMTModel, MarianTokenizer
+        model_name = f"Helsinki-NLP/opus-mt-{direction}"
+        log.info(f"  Loading translation model: {model_name}")
+        tokenizer = MarianTokenizer.from_pretrained(model_name)
+        model = MarianMTModel.from_pretrained(model_name)
+        _bt_models[direction] = (tokenizer, model)
+        return tokenizer, model
+    except Exception as e:
+        log.warning(f"  Failed to load {direction} model: {e}")
+        return None
+
+
+def _translate(text: str, direction: str) -> str:
+    """Translate text using MarianMT."""
+    loaded = _load_bt_model(direction)
+    if loaded is None:
+        return text
+    tokenizer, model = loaded
+    import torch
+    inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
+    with torch.no_grad():
+        translated = model.generate(**inputs, max_length=512, num_beams=4)
+    return tokenizer.decode(translated[0], skip_special_tokens=True)
+
+
+def augment_back_translation(
+    entry: dict,
+    n_variants: int = 2,
+    pivot_lang: str = "de",
+) -> list:
+    """
+    Generate *n_variants* paraphrases of non-entity context via
+    round-trip translation: en → pivot → en.
+
+    Entity spans are shielded with XML-style placeholders before
+    translation, then restored after.  This produces natural
+    context rephrasing while preserving all PII exactly.
+
+    Why it works
+    ────────────
+    "Please contact John Smith at john@email.com regarding case X23"
+    → (de) "Bitte kontaktieren Sie <E0> unter <E1> bezüglich Fall <E2>"
+    → (en) "Please get in touch with John Smith at john@email.com about case X23"
+    The model learns that different phrasings of the same context
+    still contain the same PII pattern.
+    """
+    original_text = entry.get("original_text", "")
+    entities = entry.get("entities", [])
+
+    if not original_text.strip():
+        return []
+
+    # Sort entities by start position
+    sorted_ents = sorted(
+        [dict(e) for e in entities],
+        key=lambda e: e.get("start", 0),
+    )
+
+    variants = []
+    for vi in range(n_variants):
+        # Step 1: Replace entity spans with placeholders (right-to-left)
+        shielded = original_text
+        placeholder_map = {}  # placeholder → (original_value, entity_dict)
+        for i, ent in enumerate(reversed(sorted_ents)):
+            start = ent.get("start", 0)
+            end = ent.get("end", 0)
+            value = ent.get("value", "")
+            placeholder = f"PIIENT{len(sorted_ents) - 1 - i}"
+            shielded = shielded[:start] + placeholder + shielded[end:]
+            placeholder_map[placeholder] = (value, ent)
+
+        # Step 2: Round-trip translate
+        try:
+            translated = _translate(shielded, f"en-{pivot_lang}")
+            back_translated = _translate(translated, f"{pivot_lang}-en")
+        except Exception:
+            continue
+
+        # Step 3: Restore entity values from placeholders
+        restored = back_translated
+        for placeholder, (value, _) in placeholder_map.items():
+            restored = restored.replace(placeholder, value)
+
+        # Skip if back-translation didn't change anything meaningful
+        if restored.strip() == original_text.strip():
+            continue
+
+        # Step 4: Re-anchor entities by searching for their values
+        new_entities = []
+        search_from = 0
+        for ent in sorted_ents:
+            val = ent.get("value", "")
+            if not val:
+                continue
+            pos = restored.find(val, search_from)
+            if pos >= 0:
+                new_ent = dict(ent)
+                new_ent["start"] = pos
+                new_ent["end"] = pos + len(val)
+                new_entities.append(new_ent)
+                search_from = pos + len(val)
+
+        # Build anonymised version
+        anon_text, anon_map = _build_anon_text(restored, new_entities)
+
+        variants.append({
+            "entry_id": f"{entry.get('entry_id')}_bt_{vi}",
+            "original_text": restored,
+            "anonymized_text": anon_text,
+            "entities": new_entities,
+            "replacements": anon_map,
+            "metadata": {
+                "augmentation_strategy": "back_translation",
+                "augmentation_ref": "Sennrich et al., WMT 2016",
+                "source_entry_id": entry.get("entry_id"),
+                "variant_index": vi,
+                "pivot_language": pivot_lang,
+                "augmented_at": datetime.now().isoformat(),
+            },
+        })
+
+    return variants
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  STRATEGY 5 :  Contextual MLM   (Kobayashi, ACL 2018)
+# ═════════════════════════════════════════════════════════════════════
+#
+# Use a pretrained masked language model to replace non-entity context
+# words with contextually appropriate alternatives.  Unlike EDA's
+# static synonym dictionary, this produces *context-sensitive*
+# replacements that maintain grammaticality and semantic coherence.
+
+_mlm_pipeline = None
+
+
+def _get_mlm_pipeline():
+    """Lazy-load a fill-mask pipeline (distilroberta-base for speed)."""
+    global _mlm_pipeline
+    if _mlm_pipeline is not None:
+        return _mlm_pipeline
+    try:
+        from transformers import pipeline
+        log.info("  Loading MLM pipeline: distilroberta-base")
+        _mlm_pipeline = pipeline("fill-mask", model="distilroberta-base",
+                                  top_k=5, device=-1)  # CPU to avoid OOM
+        return _mlm_pipeline
+    except Exception as e:
+        log.warning(f"  Failed to load MLM pipeline: {e}")
+        return None
+
+
+def augment_contextual_mlm(
+    entry: dict,
+    n_variants: int = 2,
+    replace_prob: float = 0.15,
+) -> list:
+    """
+    Generate *n_variants* of an entry by selectively masking non-entity
+    context words and filling them with a pretrained MLM's predictions.
+
+    Why it works
+    ────────────
+    "Please send the documents to John Smith at john@email.com"
+    → "Kindly submit the paperwork to John Smith at john@email.com"
+    Unlike EDA's static synonym table, the MLM generates replacements
+    that are *contextually coherent* — it "understands" the sentence
+    and picks words that fit the specific context.
+    """
+    original_text = entry.get("original_text", "")
+    entities = entry.get("entities", [])
+
+    if not original_text.strip():
+        return []
+
+    mlm = _get_mlm_pipeline()
+    if mlm is None:
+        return []
+
+    mask_token = mlm.tokenizer.mask_token
+
+    # Sort entities by start
+    sorted_ents = sorted(
+        [(e.get("start", 0), e.get("end", 0), e) for e in entities],
+        key=lambda x: x[0],
+    )
+
+    # Decompose into segments
+    segments = _decompose_text(original_text, sorted_ents)
+
+    variants = []
+    for vi in range(n_variants):
+        new_segments = []
+        any_change = False
+
+        for seg_text, is_entity, ent_ref in segments:
+            if is_entity:
+                new_segments.append((seg_text, True, ent_ref))
+                continue
+
+            # Tokenise context and randomly select words to replace
+            words = seg_text.split()
+            if len(words) < 2:
+                new_segments.append((seg_text, False, None))
+                continue
+
+            n_replace = max(1, int(replace_prob * len(words)))
+            # Only replace content words (skip very short words)
+            replaceable = [i for i, w in enumerate(words)
+                           if len(w) > 2 and w.isalpha()]
+            if not replaceable:
+                new_segments.append((seg_text, False, None))
+                continue
+
+            to_replace = random.sample(
+                replaceable, min(n_replace, len(replaceable))
+            )
+
+            new_words = list(words)
+            for idx in to_replace:
+                original_word = words[idx]
+                # Build sentence with mask
+                masked_words = list(words)
+                masked_words[idx] = mask_token
+                masked_sentence = " ".join(masked_words)
+
+                try:
+                    predictions = mlm(masked_sentence)
+                    if predictions:
+                        # Pick a random prediction from top-5 that differs
+                        candidates = [
+                            p["token_str"].strip()
+                            for p in predictions
+                            if p["token_str"].strip().lower() != original_word.lower()
+                            and p["token_str"].strip().isalpha()
+                        ]
+                        if candidates:
+                            replacement = random.choice(candidates[:3])
+                            # Preserve capitalisation
+                            if original_word[0].isupper():
+                                replacement = replacement[0].upper() + replacement[1:]
+                            new_words[idx] = replacement
+                            any_change = True
+                except Exception:
+                    pass  # Keep original word on failure
+
+            new_segments.append((" ".join(new_words), False, None))
+
+        if not any_change:
+            continue
+
+        # Reassemble text and recalculate entity offsets
+        new_text = ""
+        new_entities = []
+        for seg_text, is_entity, ent_ref in new_segments:
+            if is_entity and ent_ref is not None:
+                new_ent = dict(ent_ref)
+                new_ent["start"] = len(new_text)
+                new_ent["end"] = len(new_text) + len(seg_text)
+                new_entities.append(new_ent)
+            new_text += seg_text
+
+        # Build anonymised version
+        anon_text, anon_map = _build_anon_text(new_text, new_entities)
+
+        variants.append({
+            "entry_id": f"{entry.get('entry_id')}_cmlm_{vi}",
+            "original_text": new_text,
+            "anonymized_text": anon_text,
+            "entities": new_entities,
+            "replacements": anon_map,
+            "metadata": {
+                "augmentation_strategy": "contextual_mlm",
+                "augmentation_ref": "Kobayashi, ACL 2018",
+                "source_entry_id": entry.get("entry_id"),
+                "variant_index": vi,
+                "replace_prob": replace_prob,
+                "augmented_at": datetime.now().isoformat(),
+            },
+        })
+
+    return variants
+
+
+# ═════════════════════════════════════════════════════════════════════
 #  ORCHESTRATOR
 # ═════════════════════════════════════════════════════════════════════
 
@@ -652,6 +949,10 @@ def run_augmentation(
     template_count: int | None = None,
     eda_multiplier: int | None = None,
     eda_alpha: float | None = None,
+    bt_multiplier: int | None = None,
+    bt_pivot_lang: str | None = None,
+    cmlm_multiplier: int | None = None,
+    cmlm_prob: float | None = None,
     output_path: str | None = None,
 ) -> list[dict]:
     """
@@ -659,17 +960,25 @@ def run_augmentation(
 
     Parameters
     ──────────
-    strategy       "swap", "template", "eda", or "all"
+    strategy       "swap", "template", "eda", "backtransl", "cmlm", or "all"
     swap_multiplier  Overrides config AUG_ENTITY_SWAP_MULTIPLIER
     template_count   Overrides config AUG_TEMPLATE_FILL_COUNT
     eda_multiplier   Overrides config AUG_EDA_MULTIPLIER
     eda_alpha        Overrides config AUG_EDA_ALPHA
+    bt_multiplier    Overrides config AUG_BACKTRANSL_MULTIPLIER
+    bt_pivot_lang    Overrides config AUG_BACKTRANSL_PIVOT_LANG
+    cmlm_multiplier  Overrides config AUG_CONTEXTUAL_MLM_MULTIPLIER
+    cmlm_prob        Overrides config AUG_CONTEXTUAL_MLM_PROB
     output_path      Overrides config AUGMENTED_DATA_PATH
     """
     swap_mult = swap_multiplier or AUG_ENTITY_SWAP_MULTIPLIER
     tmpl_cnt = template_count or AUG_TEMPLATE_FILL_COUNT
     eda_mult = eda_multiplier or AUG_EDA_MULTIPLIER
     alpha = eda_alpha or AUG_EDA_ALPHA
+    bt_mult = bt_multiplier or AUG_BACKTRANSL_MULTIPLIER
+    bt_lang = bt_pivot_lang or AUG_BACKTRANSL_PIVOT_LANG
+    cmlm_mult = cmlm_multiplier or AUG_CONTEXTUAL_MLM_MULTIPLIER
+    cmlm_p = cmlm_prob or AUG_CONTEXTUAL_MLM_PROB
     out_path = output_path or AUGMENTED_DATA_PATH
 
     # ── Load gold data ──────────────────────────────────────────────
@@ -732,6 +1041,40 @@ def run_augmentation(
         log.info(f"  → {len(eda_out)} entries generated")
         all_augmented.extend(eda_out)
 
+    # ── 4. Back-Translation ─────────────────────────────────────────
+    if strategy in ("backtransl", "all"):
+        log.info(f"{'═'*60}")
+        log.info(f"Strategy 4: BACK-TRANSLATION  (×{bt_mult}, pivot={bt_lang})")
+        log.info(f"  Ref: Sennrich et al., WMT 2016")
+        log.info(f"{'═'*60}")
+        bt_out: list[dict] = []
+        iterator = tqdm(gold, desc="Back-Translation") if tqdm else gold
+        for entry in iterator:
+            try:
+                bt_out.extend(augment_back_translation(
+                    entry, n_variants=bt_mult, pivot_lang=bt_lang))
+            except Exception as exc:
+                log.debug(f"BackTransl failed for {entry.get('entry_id')}: {exc}")
+        log.info(f"  → {len(bt_out)} entries generated")
+        all_augmented.extend(bt_out)
+
+    # ── 5. Contextual MLM ──────────────────────────────────────────
+    if strategy in ("cmlm", "all"):
+        log.info(f"{'═'*60}")
+        log.info(f"Strategy 5: CONTEXTUAL MLM  (×{cmlm_mult}, p={cmlm_p})")
+        log.info(f"  Ref: Kobayashi, ACL 2018")
+        log.info(f"{'═'*60}")
+        cmlm_out: list[dict] = []
+        iterator = tqdm(gold, desc="Contextual MLM") if tqdm else gold
+        for entry in iterator:
+            try:
+                cmlm_out.extend(augment_contextual_mlm(
+                    entry, n_variants=cmlm_mult, replace_prob=cmlm_p))
+            except Exception as exc:
+                log.debug(f"CMLM failed for {entry.get('entry_id')}: {exc}")
+        log.info(f"  → {len(cmlm_out)} entries generated")
+        all_augmented.extend(cmlm_out)
+
     # ── Write output ────────────────────────────────────────────────
     log.info(f"{'═'*60}")
     log.info(f"AUGMENTATION COMPLETE")
@@ -768,17 +1111,17 @@ def run_augmentation(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="SAHA-AL Data Augmentation  (Entity Swap + Template Fill + EDA)",
+        description="SAHA-AL Data Augmentation  (Entity Swap + Template Fill + EDA + Back-Translation + Contextual MLM)",
     )
     parser.add_argument(
         "--strategy",
-        choices=["swap", "template", "eda", "all"],
+        choices=["swap", "template", "eda", "backtransl", "cmlm", "all"],
         default="all",
         help="Which augmentation strategy to run (default: all)",
     )
     parser.add_argument(
         "--multiplier", type=int, default=None,
-        help=f"Entity Swap / EDA variants per entry (default: swap={AUG_ENTITY_SWAP_MULTIPLIER}, eda={AUG_EDA_MULTIPLIER})",
+        help=f"Entity Swap / EDA / BackTransl / CMLM variants per entry (default: swap={AUG_ENTITY_SWAP_MULTIPLIER}, eda={AUG_EDA_MULTIPLIER})",
     )
     parser.add_argument(
         "--count", type=int, default=None,
@@ -787,6 +1130,14 @@ def main():
     parser.add_argument(
         "--alpha", type=float, default=None,
         help=f"EDA α parameter — fraction of words changed (default: {AUG_EDA_ALPHA})",
+    )
+    parser.add_argument(
+        "--pivot-lang", type=str, default=None,
+        help=f"Back-Translation pivot language (default: {AUG_BACKTRANSL_PIVOT_LANG})",
+    )
+    parser.add_argument(
+        "--cmlm-prob", type=float, default=None,
+        help=f"Contextual MLM replacement probability (default: {AUG_CONTEXTUAL_MLM_PROB})",
     )
     parser.add_argument(
         "--output", type=str, default=None,
@@ -800,6 +1151,10 @@ def main():
         template_count=args.count,
         eda_multiplier=args.multiplier,
         eda_alpha=args.alpha,
+        bt_multiplier=args.multiplier,
+        bt_pivot_lang=args.pivot_lang,
+        cmlm_multiplier=args.multiplier,
+        cmlm_prob=args.cmlm_prob,
         output_path=args.output,
     )
 

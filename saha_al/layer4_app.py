@@ -1,634 +1,475 @@
 """
-Layer 4 — Streamlit Annotation Interface (SAHA-AL)
-Full-featured annotation tool with:
-  - Sidebar: queue selector, annotator name, statistics
-  - Main panel: highlighted text, entity review table, replacement editor
-  - Actions: Accept, Flag, Skip
-  - Tabs: Annotation, Statistics, Flagged Review
+SAHA-AL Layer 4: Annotation Interface
+Dual-mode annotation tool: Batch Mode (spreadsheet) and Focus Mode (1-by-1).
 """
 
-import json
 import os
 import sys
-import time
-from datetime import datetime
-from collections import Counter
-
 import streamlit as st
 import pandas as pd
+from datetime import datetime
+import streamlit.components.v1 as components
 
-# ── Ensure project root is on sys.path ──────────────────────────────
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from saha_al.config import (
-    GREEN_QUEUE_PATH,
-    YELLOW_QUEUE_PATH,
-    RED_QUEUE_PATH,
+    ANNOTATION_QUEUE_PATH,
     GOLD_STANDARD_PATH,
     SKIPPED_PATH,
     FLAGGED_PATH,
-    BACKUP_DIR,
-    ANNOTATION_LOG_PATH,
-    ENTITY_TYPES,
-    MAX_LENGTH_RATIO,
-    MIN_LENGTH_RATIO,
 )
-from saha_al.utils.entity_types import ENTITY_SCHEMA
-from saha_al.utils.faker_replacements import generate_replacements
-from saha_al.utils.quality_checks import run_all_checks
-from saha_al.utils.io_helpers import (
-    read_jsonl,
-    append_jsonl,
-    backup_gold_standard,
-    get_annotated_ids,
-    count_lines,
-)
+from saha_al.utils.io_helpers import read_jsonl, write_jsonl, append_jsonl
+from saha_al.utils.quality_checks import check_leakage
 
-
-# ─────────────────────────────────────────────────────────────────────
-#  Page Config
-# ─────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="SAHA-AL Annotation Tool",
-    page_icon="🛡️",
+    page_title="SAHA-AL Annotation Pipeline",
+    page_icon="✨",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-
-# ─────────────────────────────────────────────────────────────────────
-#  Session State Initialization
-# ─────────────────────────────────────────────────────────────────────
-def init_session_state():
-    defaults = {
-        "annotator_name": "",
-        "current_queue": "YELLOW",
-        "queue_data": [],
-        "current_index": 0,
-        "modified_entities": [],
-        "modified_replacements": {},
-        "annotation_count": 0,
-        "session_start": datetime.now().isoformat(),
-        "flag_reason": "",
-    }
-    for key, val in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = val
-
-
-init_session_state()
-
-
-# ─────────────────────────────────────────────────────────────────────
-#  Queue Loading
-# ─────────────────────────────────────────────────────────────────────
-QUEUE_PATHS = {
-    "GREEN": GREEN_QUEUE_PATH,
-    "YELLOW": YELLOW_QUEUE_PATH,
-    "RED": RED_QUEUE_PATH,
+# ─── Global CSS ──────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+/* Data editor table full-height rows */
+[data-testid="stDataFrame"] div[data-testid="stVerticalBlock"] {
+    gap: 0 !important;
 }
+/* Metric values */
+div[data-testid="stMetricValue"] {
+    font-size: 2rem;
+    color: #8B5CF6;
+    font-weight: 800;
+}
+/* Info box tweak */
+.stAlert p { font-size: 0.9rem; }
+/* Radio inline */ 
+div[role="radiogroup"] { flex-direction: row; gap: 10px; }
+</style>
+""", unsafe_allow_html=True)
 
 
-def load_queue(queue_name: str) -> list:
-    """Load queue data, filtering out already-annotated ids."""
-    path = QUEUE_PATHS.get(queue_name)
-    if not path:
-        return []
-    entries = read_jsonl(path)
-    done_ids = get_annotated_ids(GOLD_STANDARD_PATH)
-    return [e for e in entries if e.get("entry_id") not in done_ids]
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+
+def init_session_state():
+    if "queue" not in st.session_state:
+        st.session_state.queue = read_jsonl(ANNOTATION_QUEUE_PATH)
+    if "current_idx" not in st.session_state:
+        st.session_state.current_idx = 0
+    if "stats" not in st.session_state:
+        st.session_state.stats = {"accepted": 0, "flagged": 0, "skipped": 0}
+    # Focus mode: entry offset within current batch view
+    if "focus_entry" not in st.session_state:
+        st.session_state.focus_entry = None
 
 
-# ─────────────────────────────────────────────────────────────────────
-#  Highlighted HTML
-# ─────────────────────────────────────────────────────────────────────
-def build_highlighted_html(text: str, entities: list) -> str:
-    """Build HTML with highlighted PII spans using entity colors."""
+def save_progress():
+    remaining = st.session_state.queue[st.session_state.current_idx:]
+    write_jsonl(ANNOTATION_QUEUE_PATH, remaining)
+
+
+def load_gold_count():
+    if os.path.exists(GOLD_STANDARD_PATH):
+        return len(read_jsonl(GOLD_STANDARD_PATH))
+    return 0
+
+
+def get_default_rewrite(text, entities):
     if not entities:
-        return f"<p style='font-size:16px; line-height:1.8;'>{_html_escape(text)}</p>"
-
-    # Sort by start position
-    sorted_ents = sorted(entities, key=lambda e: e.get("start", 0))
-
-    html_parts = []
-    last_end = 0
-
+        return text
+    sorted_ents = sorted(entities, key=lambda e: e.get("start", 0), reverse=True)
+    new_text = text
     for ent in sorted_ents:
-        start = ent.get("start", 0)
-        end = ent.get("end", 0)
-        etype = ent.get("entity_type", "UNKNOWN")
-        color = ENTITY_SCHEMA.get(etype, {}).get("color", "#CCCCCC")
-
-        # Text before this entity
-        if start > last_end:
-            html_parts.append(_html_escape(text[last_end:start]))
-
-        # Entity span with highlight
-        entity_text = _html_escape(text[start:end])
-        tooltip = f"{etype} | conf={ent.get('confidence', '?')} | {ent.get('agreement', '?')}"
-        html_parts.append(
-            f'<span style="background-color:{color}; padding:2px 4px; '
-            f'border-radius:4px; font-weight:600; cursor:help;" '
-            f'title="{tooltip}">'
-            f'{entity_text}'
-            f'<sub style="font-size:10px; color:#333;"> {etype}</sub>'
-            f'</span>'
-        )
-        last_end = end
-
-    # Remaining text
-    if last_end < len(text):
-        html_parts.append(_html_escape(text[last_end:]))
-
-    return (
-        f"<div style='font-size:16px; line-height:2.0; "
-        f"background:#1E1E1E; color:#E0E0E0; padding:16px; "
-        f"border-radius:8px; border:1px solid #333;'>"
-        f"{''.join(html_parts)}</div>"
-    )
+        etype = ent.get("label", "UNKNOWN")
+        s, e = ent.get("start", 0), ent.get("end", 0)
+        new_text = new_text[:s] + f"[REDACTED_{etype}]" + new_text[e:]
+    return new_text
 
 
-def _html_escape(text: str) -> str:
-    """Basic HTML escaping."""
-    return (
-        text.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-    )
-
-
-# ─────────────────────────────────────────────────────────────────────
-#  Annotation Actions
-# ─────────────────────────────────────────────────────────────────────
-def action_accept(entry: dict, entities: list, replacements: dict, annotator: str):
-    """Accept the annotation: run quality checks, save to gold standard."""
-    original_text = entry.get("original_text", "")
-    anonymized_text = entry.get("anonymized_text", "")
-
-    # Run quality checks (non-blocking)
-    warnings = run_all_checks(original_text, anonymized_text, entities, replacements)
-
-    # Build gold entry
-    gold_entry = {
-        "entry_id": entry.get("entry_id"),
-        "original_text": original_text,
-        "anonymized_text": anonymized_text,
-        "entities": entities,
-        "replacements": replacements,
-        "metadata": {
-            **entry.get("metadata", {}),
-            "annotator": annotator,
-            "action": "ACCEPT",
-            "annotated_at": datetime.now().isoformat(),
-            "source_queue": entry.get("routing", {}).get("queue", "UNKNOWN"),
-            "quality_warnings": len(warnings),
-            "warnings": warnings[:5],  # keep first 5 warnings
-        },
-    }
-    append_jsonl(GOLD_STANDARD_PATH, gold_entry)
-
-    # Log
-    _log_action(entry, annotator, "ACCEPT", warnings)
-
-    # Backup periodically
-    st.session_state["annotation_count"] += 1
-    if st.session_state["annotation_count"] % 50 == 0:
-        backup_gold_standard(GOLD_STANDARD_PATH, BACKUP_DIR)
-
-    return warnings
-
-
-def action_flag(entry: dict, annotator: str, reason: str):
-    """Flag entry for expert review."""
-    flag_entry = {
-        "entry_id": entry.get("entry_id"),
-        "original_text": entry.get("original_text", ""),
-        "entities": entry.get("entities", []),
-        "flag_reason": reason,
-        "flagged_by": annotator,
-        "flagged_at": datetime.now().isoformat(),
-        "source_queue": entry.get("routing", {}).get("queue", "UNKNOWN"),
-    }
-    append_jsonl(FLAGGED_PATH, flag_entry)
-    _log_action(entry, annotator, "FLAG")
-
-
-def action_skip(entry: dict, annotator: str):
-    """Skip entry, save to skipped file."""
-    skip_entry = {
-        "entry_id": entry.get("entry_id"),
-        "skipped_by": annotator,
-        "skipped_at": datetime.now().isoformat(),
-    }
-    append_jsonl(SKIPPED_PATH, skip_entry)
-    _log_action(entry, annotator, "SKIP")
-
-
-def _log_action(entry: dict, annotator: str, action: str, warnings: list = None):
-    """Append to annotation log."""
-    log_entry = {
-        "entry_id": entry.get("entry_id"),
-        "annotator": annotator,
-        "action": action,
-        "timestamp": datetime.now().isoformat(),
-        "queue": entry.get("routing", {}).get("queue", "UNKNOWN"),
-        "warnings_count": len(warnings) if warnings else 0,
-    }
-    append_jsonl(ANNOTATION_LOG_PATH, log_entry)
-
-
-# ─────────────────────────────────────────────────────────────────────
-#  Sidebar
-# ─────────────────────────────────────────────────────────────────────
-def render_sidebar():
-    with st.sidebar:
-        st.title("🛡️ SAHA-AL")
-        st.markdown("**Semi-Automatic Human-Augmented Active Learning**")
-        st.markdown("---")
-
-        # Annotator name
-        st.session_state["annotator_name"] = st.text_input(
-            "👤 Annotator Name",
-            value=st.session_state["annotator_name"],
-            placeholder="Enter your name",
-        )
-
-        st.markdown("---")
-
-        # Queue selector
-        selected_queue = st.radio(
-            "📂 Select Queue",
-            ["YELLOW", "RED", "GREEN"],
-            index=["YELLOW", "RED", "GREEN"].index(st.session_state["current_queue"]),
-            help="YELLOW=medium confidence, RED=low confidence, GREEN=auto-approved",
-        )
-
-        if selected_queue != st.session_state["current_queue"]:
-            st.session_state["current_queue"] = selected_queue
-            st.session_state["queue_data"] = load_queue(selected_queue)
-            st.session_state["current_index"] = 0
-
-        # Load queue button
-        if st.button("🔄 Reload Queue", use_container_width=True):
-            st.session_state["queue_data"] = load_queue(st.session_state["current_queue"])
-            st.session_state["current_index"] = 0
-            st.rerun()
-
-        st.markdown("---")
-
-        # Queue stats
-        st.markdown("### 📊 Queue Sizes")
-        for q_name in ["GREEN", "YELLOW", "RED"]:
-            count = count_lines(QUEUE_PATHS.get(q_name, ""))
-            color = {"GREEN": "🟢", "YELLOW": "🟡", "RED": "🔴"}[q_name]
-            st.metric(f"{color} {q_name}", count)
-
-        st.markdown("---")
-
-        # Gold standard count
-        gold_count = count_lines(GOLD_STANDARD_PATH)
-        st.metric("✅ Gold Standard", gold_count)
-        st.metric("📝 This Session", st.session_state["annotation_count"])
-
-        st.markdown("---")
-
-        # Backup button
-        if st.button("💾 Backup Gold Standard", use_container_width=True):
-            path = backup_gold_standard(GOLD_STANDARD_PATH, BACKUP_DIR)
-            if path:
-                st.success(f"Backed up to {os.path.basename(path)}")
-            else:
-                st.info("No gold standard file to back up yet.")
-
-
-# ─────────────────────────────────────────────────────────────────────
-#  Main: Annotation Tab
-# ─────────────────────────────────────────────────────────────────────
-def render_annotation_tab():
-    queue_data = st.session_state["queue_data"]
-    idx = st.session_state["current_index"]
-
-    if not queue_data:
-        st.info(
-            f"No entries in the **{st.session_state['current_queue']}** queue "
-            f"(or all have been annotated). Click **Reload Queue** in the sidebar."
-        )
-        return
-
-    if idx >= len(queue_data):
-        st.success("🎉 You've processed all entries in this queue!")
-        if st.button("Start Over"):
-            st.session_state["current_index"] = 0
-            st.rerun()
-        return
-
-    entry = queue_data[idx]
-
-    # ── Progress bar ──
-    st.progress(idx / len(queue_data), text=f"Entry {idx + 1} of {len(queue_data)}")
-
-    # ── Entry header ──
-    col_id, col_queue, col_agreement = st.columns(3)
-    with col_id:
-        st.markdown(f"**Entry ID:** `{entry.get('entry_id')}`")
-    with col_queue:
-        queue = entry.get("routing", {}).get("queue", "?")
-        badge_color = {"GREEN": "🟢", "YELLOW": "🟡", "RED": "🔴"}.get(queue, "⚪")
-        st.markdown(f"**Queue:** {badge_color} {queue}")
-    with col_agreement:
-        metadata = entry.get("metadata", {})
-        agr = metadata.get("agreement_counts", {})
-        st.markdown(
-            f"**Agreement:** Full={agr.get('full', 0)} "
-            f"Partial={agr.get('partial', 0)} "
-            f"Single={agr.get('single_source', 0)}"
-        )
-
-    st.markdown("---")
-
-    # ── Highlighted original text ──
-    st.markdown("#### 📄 Original Text (with detected PII)")
-    entities = entry.get("entities", [])
-    html = build_highlighted_html(entry.get("original_text", ""), entities)
-    st.markdown(html, unsafe_allow_html=True)
-
-    st.markdown("")
-
-    # ── Anonymized text preview ──
-    with st.expander("👀 Anonymized Text Preview", expanded=False):
-        st.text(entry.get("anonymized_text", ""))
-
-    st.markdown("---")
-
-    # ── Entity Review Table ──
-    st.markdown("#### 🔍 Entity Review")
-
+def get_highlighted_html(text, entities):
     if not entities:
-        st.info("No entities detected in this entry.")
-    else:
-        # Initialize modified entities from entry entities on first load
-        if (
-            not st.session_state.get("modified_entities")
-            or st.session_state.get("_loaded_entry_id") != entry.get("entry_id")
-        ):
-            st.session_state["modified_entities"] = [dict(e) for e in entities]
-            st.session_state["modified_replacements"] = dict(entry.get("replacements", {}))
-            st.session_state["_loaded_entry_id"] = entry.get("entry_id")
+        return text
+    sorted_ents = sorted(entities, key=lambda e: e.get("start", 0), reverse=True)
+    html = text
+    for ent in sorted_ents:
+        s, e = ent.get("start", 0), ent.get("end", 0)
+        label = ent.get("label", "?")
+        value = ent.get("value", html[s:e])
+        tag = (
+            f'<span style="background:#fbbf24;color:#000;padding:1px 5px;'
+            f'border-radius:4px;font-weight:700;">{value}</span>'
+            f'<sup style="color:#ef4444;font-size:0.75em;font-weight:700;">{label}</sup>'
+        )
+        html = html[:s] + tag + html[e:]
+    return html
 
-        mod_entities = st.session_state["modified_entities"]
-        mod_replacements = st.session_state["modified_replacements"]
 
-        for i, ent in enumerate(mod_entities):
-            col_text, col_type, col_conf, col_repl, col_del = st.columns([3, 2, 1, 3, 1])
+def fmt_entities(entities):
+    if not entities:
+        return "—"
+    return " · ".join([f"{e['value']} [{e['label']}]" for e in entities])
 
-            with col_text:
-                st.text(ent.get("text", ""))
 
-            with col_type:
-                current_type = ent.get("entity_type", "UNKNOWN")
-                type_idx = ENTITY_TYPES.index(current_type) if current_type in ENTITY_TYPES else len(ENTITY_TYPES) - 1
-                new_type = st.selectbox(
-                    "Type",
-                    ENTITY_TYPES,
-                    index=type_idx,
-                    key=f"type_{i}",
-                    label_visibility="collapsed",
-                )
-                mod_entities[i]["entity_type"] = new_type
+def persist_results(accept_list, flag_list, skip_list):
+    if accept_list:
+        append_jsonl(GOLD_STANDARD_PATH, accept_list)
+        st.session_state.stats["accepted"] += len(accept_list)
+    if flag_list:
+        append_jsonl(FLAGGED_PATH, flag_list)
+        st.session_state.stats["flagged"] += len(flag_list)
+    if skip_list:
+        append_jsonl(SKIPPED_PATH, skip_list)
+        st.session_state.stats["skipped"] += len(skip_list)
 
-            with col_conf:
-                conf = ent.get("confidence", 0)
-                color = "🟢" if conf >= 0.85 else ("🟡" if conf >= 0.5 else "🔴")
-                st.markdown(f"{color} {conf:.2f}")
 
-            with col_repl:
-                pii_text = ent.get("text", "")
-                current_repl = mod_replacements.get(pii_text, "")
-                new_repl = st.text_input(
-                    "Replacement",
-                    value=current_repl,
-                    key=f"repl_{i}",
-                    label_visibility="collapsed",
-                )
-                mod_replacements[pii_text] = new_repl
+# ─── Sidebar ─────────────────────────────────────────────────────────────────
 
-            with col_del:
-                if st.button("🗑️", key=f"del_{i}", help="Remove this entity"):
-                    mod_entities.pop(i)
-                    st.rerun()
+def render_sidebar(mode):
+    with st.sidebar:
+        st.markdown(
+            """
+            <div style="text-align:center;padding:12px 0 6px;">
+                <span style="font-size:2.6rem;font-weight:900;
+                    background:linear-gradient(90deg,#8B5CF6,#EC4899);
+                    -webkit-background-clip:text;-webkit-text-fill-color:transparent;">
+                    SAHA‑AL
+                </span><br>
+                <span style="font-size:0.75rem;letter-spacing:3px;color:#6B7280;
+                    text-transform:uppercase;">Annotation Engine</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.divider()
 
-        # Regenerate replacements button
-        if st.button("🔄 Regenerate All Replacements"):
-            for ent in mod_entities:
-                pii_text = ent.get("text", "")
-                etype = ent.get("entity_type", "UNKNOWN")
-                candidates = generate_replacements(etype, pii_text, n=3)
-                if candidates:
-                    mod_replacements[pii_text] = candidates[0]
+        total = len(st.session_state.queue)
+        done = st.session_state.current_idx
+        pct = done / max(total, 1)
+        st.progress(pct, text=f"{done:,} / {total:,} done  ({int(pct*100)}%)")
+
+        st.divider()
+        c1, c2 = st.columns(2)
+        c1.metric("Remaining", f"{max(0, total-done):,}")
+        c2.metric("Gold ✅", f"{load_gold_count():,}")
+
+        st.divider()
+        st.markdown("**Session**")
+        st.write(f"✅ Accepted  — **{st.session_state.stats['accepted']}**")
+        st.write(f"🚩 Flagged   — **{st.session_state.stats['flagged']}**")
+        st.write(f"⏭ Skipped   — **{st.session_state.stats['skipped']}**")
+
+        st.divider()
+        # ── Settings ──────────────────────────────────
+        st.markdown("**⚙️ Settings**")
+        if mode == "batch":
+            bs = st.slider("Batch size", 5, 50, 20, 5, key="batch_size")
+        else:
+            bs = st.session_state.get("batch_size", 20)
+
+        st.divider()
+        st.markdown("**👤 Annotator**")
+        annotator = st.selectbox(
+            "Select your annotator ID",
+            options=["A1 — Annotator 1", "A2 — Annotator 2", "A3 — Annotator 3"],
+            key="annotator_id",
+            label_visibility="collapsed",
+        )
+        annotator_code = annotator.split(" ")[0]  # e.g. "A1"
+
+        if st.button("↩ Reset queue pointer", use_container_width=True):
+            st.session_state.current_idx = 0
+            st.session_state.focus_entry = None
             st.rerun()
 
-    st.markdown("---")
-
-    # ── Action Buttons ──
-    st.markdown("#### ⚡ Actions")
-    col_accept, col_flag, col_skip, col_nav = st.columns(4)
-
-    annotator = st.session_state.get("annotator_name", "").strip()
-
-    with col_accept:
-        if st.button("✅ Accept", type="primary", use_container_width=True):
-            if not annotator:
-                st.error("Please enter your annotator name in the sidebar.")
-                return
-            warnings = action_accept(
-                entry,
-                st.session_state.get("modified_entities", entities),
-                st.session_state.get("modified_replacements", entry.get("replacements", {})),
-                annotator,
-            )
-            if warnings:
-                st.warning(f"⚠️ {len(warnings)} quality warning(s) — saved anyway.")
-                for w in warnings[:3]:
-                    st.caption(f"  • [{w.get('severity')}] {w.get('message')}")
-            else:
-                st.success("Saved to gold standard!")
-            time.sleep(0.5)
-            _advance()
-
-    with col_flag:
-        flag_reason = st.text_input("Flag reason", key="flag_input", placeholder="Why?")
-        if st.button("🚩 Flag", use_container_width=True):
-            if not annotator:
-                st.error("Please enter your annotator name in the sidebar.")
-                return
-            action_flag(entry, annotator, flag_reason or "No reason given")
-            st.info("Entry flagged for expert review.")
-            time.sleep(0.3)
-            _advance()
-
-    with col_skip:
-        if st.button("⏭️ Skip", use_container_width=True):
-            action_skip(entry, annotator or "anonymous")
-            _advance()
-
-    with col_nav:
-        st.markdown("**Navigation**")
-        sub1, sub2 = st.columns(2)
-        with sub1:
-            if st.button("⬅️ Prev") and idx > 0:
-                st.session_state["current_index"] -= 1
-                st.rerun()
-        with sub2:
-            if st.button("➡️ Next") and idx < len(queue_data) - 1:
-                st.session_state["current_index"] += 1
-                st.rerun()
+        return bs, annotator_code
 
 
-def _advance():
-    """Move to next entry and rerun."""
-    st.session_state["current_index"] += 1
-    st.session_state["modified_entities"] = []
-    st.session_state["modified_replacements"] = {}
-    st.rerun()
+# ─── Batch Mode ──────────────────────────────────────────────────────────────
 
+def render_batch_mode(batch_size, annotator_id):
+    total = len(st.session_state.queue)
+    cur = st.session_state.current_idx
+    end = min(cur + batch_size, total)
+    batch = st.session_state.queue[cur:end]
 
-# ─────────────────────────────────────────────────────────────────────
-#  Statistics Tab
-# ─────────────────────────────────────────────────────────────────────
-def render_statistics_tab():
-    st.markdown("### 📊 Annotation Statistics")
-
-    # Gold standard stats
-    gold_entries = read_jsonl(GOLD_STANDARD_PATH)
-    if not gold_entries:
-        st.info("No gold standard entries yet. Start annotating!")
-        return
-
-    st.metric("Total Gold Standard Entries", len(gold_entries))
-
-    # Entity type distribution
-    type_counts = Counter()
-    for entry in gold_entries:
-        for ent in entry.get("entities", []):
-            type_counts[ent.get("entity_type", "UNKNOWN")] += 1
-
-    if type_counts:
-        st.markdown("#### Entity Type Distribution")
-        df = pd.DataFrame(
-            sorted(type_counts.items(), key=lambda x: -x[1]),
-            columns=["Entity Type", "Count"],
-        )
-        st.bar_chart(df.set_index("Entity Type"))
-        st.dataframe(df, use_container_width=True)
-
-    # Annotator distribution
-    annotator_counts = Counter()
-    for entry in gold_entries:
-        annotator = entry.get("metadata", {}).get("annotator", "unknown")
-        annotator_counts[annotator] += 1
-
-    if annotator_counts:
-        st.markdown("#### Annotator Contributions")
-        df_ann = pd.DataFrame(
-            sorted(annotator_counts.items(), key=lambda x: -x[1]),
-            columns=["Annotator", "Count"],
-        )
-        st.dataframe(df_ann, use_container_width=True)
-
-    # Queue source distribution
-    queue_counts = Counter()
-    for entry in gold_entries:
-        q = entry.get("metadata", {}).get("source_queue", "UNKNOWN")
-        queue_counts[q] += 1
-
-    if queue_counts:
-        st.markdown("#### Source Queue Distribution")
-        df_q = pd.DataFrame(
-            sorted(queue_counts.items(), key=lambda x: -x[1]),
-            columns=["Queue", "Count"],
-        )
-        st.dataframe(df_q, use_container_width=True)
-
-    # Warnings summary
-    total_warnings = sum(
-        entry.get("metadata", {}).get("quality_warnings", 0) for entry in gold_entries
+    # Gradient header
+    st.markdown(
+        f"""<h2 style="font-weight:800;background:linear-gradient(90deg,#8B5CF6,#EC4899);
+        -webkit-background-clip:text;-webkit-text-fill-color:transparent;">
+        📋 Batch #{cur//batch_size + 1} &nbsp;·&nbsp; Entries {cur}–{end-1}</h2>""",
+        unsafe_allow_html=True,
     )
-    st.metric("Total Quality Warnings", total_warnings)
 
-    # Annotation log timeline
-    log_entries = read_jsonl(ANNOTATION_LOG_PATH)
-    if log_entries:
-        st.markdown("#### Recent Annotation Log")
-        recent = log_entries[-20:]  # last 20
-        df_log = pd.DataFrame(recent)
-        if not df_log.empty:
-            st.dataframe(df_log, use_container_width=True)
+    # ── Pagination controls ────────────────────────────────────────────────────
+    nav_l, nav_info, nav_r = st.columns([1, 4, 1])
+    with nav_l:
+        if st.button("◀ Prev Batch", disabled=(cur == 0), use_container_width=True):
+            st.session_state.current_idx = max(0, cur - batch_size)
+            st.rerun()
+    with nav_info:
+        total_batches = max(1, (total + batch_size - 1) // batch_size)
+        current_batch = cur // batch_size + 1
+        st.markdown(
+            f"<p style='text-align:center;color:#9CA3AF;margin:0;padding-top:6px;'>"
+            f"Batch {current_batch} of {total_batches}</p>",
+            unsafe_allow_html=True,
+        )
+    with nav_r:
+        if st.button("Next Batch ▶", disabled=(end >= total), use_container_width=True):
+            st.session_state.current_idx = end
+            st.rerun()
+
+    st.divider()
+    st.caption("💡 Edit **Anonymized Rewrite** cells. Set **Action** to Flag or Skip if needed. Hit **Save Batch** when done.")
+
+    # Keyboard shortcut
+    components.html(
+        """<script>
+        const doc = window.parent.document;
+        doc.addEventListener('keydown', e => {
+            if ((e.ctrlKey||e.metaKey) && e.key==='Enter') {
+                const btn = Array.from(doc.querySelectorAll('button')).find(b => b.innerText.includes('Save Batch'));
+                if (btn) btn.click();
+            }
+        });
+        </script>""",
+        height=0, width=0,
+    )
+
+    # Build DataFrame
+    rows = []
+    for i, entry in enumerate(batch):
+        rows.append({
+            "_i": i,
+            "ID": entry.get("entry_id", "?"),
+            "Original Text": entry.get("original_text", ""),
+            "PII Found": fmt_entities(entry.get("entities", [])),
+            "Anonymized Rewrite ✏️": get_default_rewrite(
+                entry.get("original_text", ""), entry.get("entities", [])
+            ),
+            "Action": "Accept",
+        })
+    df = pd.DataFrame(rows)
+
+    edited_df = st.data_editor(
+        df,
+        column_config={
+            "_i": None,
+            "ID": st.column_config.NumberColumn(disabled=True, width=60),
+            "Original Text": st.column_config.TextColumn(disabled=True, width="large", max_chars=None),
+            "PII Found": st.column_config.TextColumn(disabled=True, width="medium"),
+            "Anonymized Rewrite ✏️": st.column_config.TextColumn(required=True, width="large"),
+            "Action": st.column_config.SelectboxColumn(
+                options=["Accept", "Flag", "Skip"],
+                required=True,
+                width=100,
+            ),
+        },
+        hide_index=True,
+        use_container_width=True,
+        height=min(38 + len(batch) * 42, 900),   # dynamic row height
+        key=f"editor_{cur}_{end}",
+    )
+
+    # ── Save button ────────────────────────────────────────────────────────────
+    save_col, focus_col = st.columns([3, 1])
+    with save_col:
+        save_clicked = st.button("✅ Save Batch  (Ctrl+Enter)", type="primary", use_container_width=True)
+    with focus_col:
+        jump_target = st.number_input("Jump to entry #", value=cur, min_value=0,
+                                       max_value=total - 1, step=1, key="jump_input")
+        if st.button("↩ Jump", use_container_width=True):
+            st.session_state.current_idx = jump_target
+            st.rerun()
+
+    if save_clicked:
+        accept_list, flag_list, skip_list = [], [], []
+        errors = []
+        for _, row in edited_df.iterrows():
+            i = row["_i"]
+            orig = batch[i]
+            action = row["Action"]
+            rewrite = str(row["Anonymized Rewrite ✏️"]).strip()
+            proc = orig.copy()
+            proc["timestamp"] = datetime.now().isoformat()
+            proc["annotator_id"] = annotator_id
+            if action == "Accept":
+                if not rewrite:
+                    errors.append(f"Entry {orig['entry_id']}: rewrite is empty.")
+                    continue
+                leaks = check_leakage(orig["original_text"], rewrite, orig.get("entities", []))
+                if leaks:
+                    errors.append(f"Entry {orig['entry_id']}: leakage — {', '.join(leaks)}")
+                    continue
+                proc["anonymized_text"] = rewrite
+                accept_list.append(proc)
+            elif action == "Flag":
+                proc["reason"] = "Flagged in batch"
+                flag_list.append(proc)
+            else:
+                skip_list.append(proc)
+
+        if errors:
+            for e in errors:
+                st.error(e)
+        else:
+            persist_results(accept_list, flag_list, skip_list)
+            st.session_state.current_idx = end
+            save_progress()
+            st.toast(f"Saved {len(accept_list)} ✅  {len(flag_list)} 🚩  {len(skip_list)} ⏭", icon="🔥")
+            st.rerun()
 
 
-# ─────────────────────────────────────────────────────────────────────
-#  Flagged Review Tab
-# ─────────────────────────────────────────────────────────────────────
-def render_flagged_tab():
-    st.markdown("### 🚩 Flagged Entries")
+# ─── Focus Mode ────────────────────────────────────────────────────────────────
 
-    flagged = read_jsonl(FLAGGED_PATH)
-    if not flagged:
-        st.info("No flagged entries yet.")
+def render_focus_mode(annotator_id):
+    total = len(st.session_state.queue)
+    cur = st.session_state.current_idx
+    entry = st.session_state.queue[cur]
+
+    # ── Navigation ────────────────────────────────────────────────────────────
+    nav_l, nav_c, nav_r = st.columns([1, 6, 1])
+    with nav_l:
+        if st.button("◀ Prev", disabled=(cur == 0), use_container_width=True):
+            st.session_state.current_idx -= 1
+            st.rerun()
+    with nav_c:
+        # Jump to arbitrary entry
+        go_to = st.number_input(
+            "Jump to entry index",
+            value=cur, min_value=0, max_value=total - 1,
+            step=1, label_visibility="collapsed", key="focus_jump",
+        )
+        if go_to != cur:
+            st.session_state.current_idx = go_to
+            st.rerun()
+        st.markdown(
+            f"<p style='text-align:center;color:#9CA3AF;font-size:0.85rem;'>"
+            f"Entry {cur + 1} of {total} &nbsp;·&nbsp; ID #{entry.get('entry_id','?')}</p>",
+            unsafe_allow_html=True,
+        )
+    with nav_r:
+        if st.button("Next ▶", disabled=(cur >= total - 1), use_container_width=True):
+            st.session_state.current_idx += 1
+            st.rerun()
+
+    st.divider()
+
+    # ── Content layout ──────────────────────────────────────────────────────
+    left, right = st.columns(2, gap="large")
+
+    with left:
+        st.subheader("📄 Original Text")
+        highlighted = get_highlighted_html(entry.get("original_text", ""), entry.get("entities", []))
+        st.markdown(
+            f'<div style="background:#111827;color:#F9FAFB;padding:16px;border-radius:10px;'
+            f'line-height:1.8;font-size:1.05rem;border:1px solid #374151;">{highlighted}</div>',
+            unsafe_allow_html=True,
+        )
+
+        if entry.get("masked_text"):
+            st.subheader("🔖 Masked Reference")
+            st.code(entry["masked_text"], language=None)
+
+        if entry.get("entities"):
+            st.subheader("🏷️ Detected Entities")
+            ent_df = pd.DataFrame([
+                {"Label": e["label"], "Value": e["value"]}
+                for e in entry["entities"]
+            ])
+            st.dataframe(ent_df, hide_index=True, use_container_width=True)
+
+    with right:
+        st.subheader("✍️ Your Rewrite")
+        default = get_default_rewrite(entry.get("original_text", ""), entry.get("entities", []))
+        rewrite = st.text_area(
+            "Pseudonymize — replace every [REDACTED_*] with a realistic fake:",
+            value=default,
+            height=220,
+            key=f"focus_rewrite_{cur}",
+        ).strip()
+
+        # Keyboard shortcut hint
+        components.html(
+            """<script>
+            const doc = window.parent.document;
+            doc.addEventListener('keydown', e => {
+                if ((e.ctrlKey||e.metaKey) && e.key==='Enter') {
+                    const btn = Array.from(doc.querySelectorAll('button'))
+                        .find(b => b.innerText.includes('Accept'));
+                    if (btn) btn.click();
+                }
+            });
+            </script>""",
+            height=0, width=0,
+        )
+
+        st.caption("⌨️  Ctrl+Enter = Accept")
+
+        btn1, btn2, btn3 = st.columns(3)
+        proc = entry.copy()
+        proc["timestamp"] = datetime.now().isoformat()
+        proc["annotator_id"] = annotator_id
+
+        with btn1:
+            if st.button("✅ Accept", type="primary", use_container_width=True, key=f"acc_{cur}"):
+                if not rewrite:
+                    st.error("Rewrite is empty.")
+                else:
+                    leaks = check_leakage(entry["original_text"], rewrite, entry.get("entities", []))
+                    if leaks:
+                        st.error(f"PII leakage: {', '.join(leaks)}")
+                    else:
+                        proc["anonymized_text"] = rewrite
+                        persist_results([proc], [], [])
+                        st.session_state.current_idx += 1
+                        save_progress()
+                        st.toast("Saved! ✅", icon="🔥")
+                        st.rerun()
+
+        with btn2:
+            if st.button("🚩 Flag", use_container_width=True, key=f"flag_{cur}"):
+                proc["reason"] = "Annotator flagged"
+                persist_results([], [proc], [])
+                st.session_state.current_idx += 1
+                save_progress()
+                st.rerun()
+
+        with btn3:
+            if st.button("⏭ Skip", use_container_width=True, key=f"skip_{cur}"):
+                persist_results([], [], [proc])
+                st.session_state.current_idx += 1
+                save_progress()
+                st.rerun()
+
+
+# ─── Main ─────────────────────────────────────────────────────────────────────
+
+def main():
+    init_session_state()
+
+    # Mode toggle at top of page
+    mode = st.radio(
+        "**Annotation Mode**",
+        ["📋 Batch Mode", "🔍 Focus Mode"],
+        horizontal=True,
+        key="annotation_mode",
+    )
+
+    mode_key = "batch" if "Batch" in mode else "focus"
+    batch_size, annotator_id = render_sidebar(mode_key)
+
+    st.divider()
+
+    if st.session_state.current_idx >= len(st.session_state.queue):
+        st.balloons()
+        st.success("🎉 Annotation queue is complete!")
         return
 
-    st.metric("Total Flagged", len(flagged))
-
-    for i, entry in enumerate(flagged):
-        with st.expander(
-            f"Entry {entry.get('entry_id')} — flagged by {entry.get('flagged_by', '?')}",
-            expanded=False,
-        ):
-            st.markdown(f"**Reason:** {entry.get('flag_reason', 'N/A')}")
-            st.markdown(f"**Flagged at:** {entry.get('flagged_at', '?')}")
-            st.markdown(f"**Source queue:** {entry.get('source_queue', '?')}")
-            st.text(entry.get("original_text", "")[:500])
-
-            entities = entry.get("entities", [])
-            if entities:
-                df = pd.DataFrame([
-                    {
-                        "Text": e.get("text"),
-                        "Type": e.get("entity_type"),
-                        "Conf": e.get("confidence"),
-                    }
-                    for e in entities
-                ])
-                st.dataframe(df, use_container_width=True)
-
-
-# ─────────────────────────────────────────────────────────────────────
-#  Main App
-# ─────────────────────────────────────────────────────────────────────
-def main():
-    render_sidebar()
-
-    # Load queue on first run
-    if not st.session_state["queue_data"]:
-        st.session_state["queue_data"] = load_queue(st.session_state["current_queue"])
-
-    # Tabs
-    tab_annotate, tab_stats, tab_flagged = st.tabs([
-        "📝 Annotation",
-        "📊 Statistics",
-        "🚩 Flagged",
-    ])
-
-    with tab_annotate:
-        render_annotation_tab()
-
-    with tab_stats:
-        render_statistics_tab()
-
-    with tab_flagged:
-        render_flagged_tab()
+    if mode_key == "batch":
+        render_batch_mode(batch_size, annotator_id)
+    else:
+        render_focus_mode(annotator_id)
 
 
 if __name__ == "__main__":
